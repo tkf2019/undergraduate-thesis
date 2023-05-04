@@ -28,7 +28,7 @@
             "env": {}
         }
     ],
-    "latex-workshop.latex.autoClean.run": "onBuilt", //注意结尾是 t 不是 d
+    "latex-workshop.latex.autoClean.run": "onBuilt",
     "latex-workshop.latex.clean.fileTypes": [
         "*.aux",
         "*.bbl",

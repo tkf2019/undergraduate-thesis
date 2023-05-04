@@ -1,73 +1,80 @@
-% !TeX root = ../thuthesis-example.tex
+% !TeX root = ../thesis.tex
 
-\chapter{引用文献的标注}
+\chapter{软件实现}
 
-模板支持 BibTeX 和 BibLaTeX 两种方式处理参考文献。
-下文主要介绍 BibTeX 配合 \pkg{natbib} 宏包的主要使用方法。
+\section{QEMU}
 
+QEMU \cite{qemu} 为操作系统和用户态程序提供虚拟的执行环境，通过动态的二进制转换，模拟 CPU 的行为，同时支持多种外设的仿真，在系统开发中扮演着重要角色。
+QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我们可以不断完善设计草案。对 QEMU 的修改主要分为四个方面：
 
-\section{顺序编码制}
+\begin{itemize}
+    \item 指令翻译：引入对 UIPI 指令的译码和执行；
+    \item CPU 状态：维护 CSR 寄存器等 CPU 状态；
+    \item 内存读写：UIPI 指令需要直接访问物理内存和 UINTC 外设，直接调用 void cpu\_physical\_memory\_rw(hwaddr addr, void *buf, hwaddr len, bool is\_write) 函数完成对物理地址的读写；
+    \item 核间中断：实现 UINTC 并向各个核发送中断。
+\end{itemize}
 
-在顺序编码制下，默认的 \cs{cite} 命令同 \cs{citep} 一样，序号置于方括号中，
-引文页码会放在括号外。
-统一处引用的连续序号会自动用短横线连接。
+\subsection{指令翻译}
 
-\thusetup{
-  cite-style = super,
+QEMU 翻译一条指令的大致过程为：从客户机指令（Guest Instructions）到中间码（TCG，Tiny Code Generator），最后再到宿主机指令（Host Instructions）。
+QEMU 的翻译机制类似于 CPU 流水线中的译码阶段，需要定义模式串来帮助 QEMU 在执行到某一指令时调用对应的辅助函数。模式串的定义位于 target/riscv/insn32.decode ：
+
+\lstset{language=C}
+\begin{lstlisting}
+uipi_send       0000000  00000 ..... 010 ..... 1111011 @r2
+uipi_read       0000001  00000 ..... 010 ..... 1111011 @r2
+uipi_write      0000010  00000 ..... 010 ..... 1111011 @r2
+uipi_activate   0000011  00000 ..... 010 ..... 1111011 @r2
+uipi_deactivate 0000100  00000 ..... 010 ..... 1111011 @r2
+\end{lstlisting}
+
+以 uret 这条指令为例，在 target/riscv/insn\_trans 目录下,有各种指令的翻译过程，主要用来将指令解析的结果（寄存器，立即数等）传递给辅助函数，将客户机指令拆解为宿主机指令来模拟目标指令的功能。
+对于 uret 指令的执行涉及到较多 CPU 状态的变化，会对 pc ，CSR 等产生影响， 辅助函数的定义位于 target/riscv/helper\.h，通过宏定义 DEF\_HELPER\_x 来声明辅助函数，例如：
+
+\lstset{language=C}
+\begin{lstlisting}
+DEF_HELPER_1(uret, tl, env)
+DEF_HELPER_4(csrrw, tl, env, int, tl, tl)
+\end{lstlisting}
+
+其中第一个参数对应辅助函数的名称 ，第二个参数代表函数的返回值类型（tl 表示 target\_ulong），后面的参数都是辅助函数传入的参数类型。有了以上的参考，我们可以定义其他辅助函数：
+
+\lstset{language=C}
+\begin{lstlisting}
+DEF_HELPER_2(uipi_write, void, env, tl)
+void helper_uipi_write(CPURISCVState *env, target_ulong src) {
+    if (uipi_enabled(env, env->suirs)) {
+        uint64_t addr = UINTC_REG_HIGH(env->suicfg, SUIRS_INDEX(env->suirs));
+        cpu_physical_memory_write(addr, &src, 8);
+    }
 }
-\begin{tabular}{l@{\quad$\Rightarrow$\quad}l}
-  \verb|\cite{zhangkun1994}|               & \cite{zhangkun1994}               \\
-  \verb|\citet{zhangkun1994}|              & \citet{zhangkun1994}              \\
-  \verb|\citep{zhangkun1994}|              & \citep{zhangkun1994}              \\
-  \verb|\cite[42]{zhangkun1994}|           & \cite[42]{zhangkun1994}           \\
-  \verb|\cite{zhangkun1994,zhukezhen1973}| & \cite{zhangkun1994,zhukezhen1973} \\
-\end{tabular}
+\end{lstlisting}
+
+\subsection{CPU 状态}
+
+struct CPUArchState：CPU 状态结构体位于 target/riscv/cpu.h。这个结构同时考虑了 RV32、RV64、RV128 的情况，这些寄存器都是 CPU 运行时必要的状态。包括但不限于：
+
+\begin{itemize}
+    \item pc
+    \item 整数、浮点寄存器堆
+    \item CSR，有些寄存器是 M 态和 S 态复用的，例如 mstatus、 mip 等
+    \item PMP 寄存器堆
+    \item 通过 kernel\_addr、fdt\_addr 等从指定位置加载镜像
+\end{itemize}
+
+在target/riscv/cpu.h 文件末尾的表中注册 CSR 的操作函数。
+
+中断异常、CSR 等宏定义位于 target/riscv/cpu\_bits.h ，我们需要在其中添加和 U 态有关的中断控制位。
+CPU 中断异常处理函数位于 target/riscv/cpu\_helper.c 的最后，
+这个函数对中断异常原因进行判断，并根据 CPU 当前的特权级做不同的处理。
+这个函数只给出了 M 态和 S 态的中断异常处理，我们需要额外在此处加入委托给 U 态的中断异常处理，也就是读写 ustatus，ucause，uepc 等寄存器。
+
+\subsection{核间中断}
 
 
-也可以取消上标格式，将数字序号作为文字的一部分。
-建议全文统一使用相同的格式。
 
-\thusetup{
-  cite-style = inline,
-}
-\begin{tabular}{l@{\quad$\Rightarrow$\quad}l}
-  \verb|\cite{zhangkun1994}|               & \cite{zhangkun1994}               \\
-  \verb|\citet{zhangkun1994}|              & \citet{zhangkun1994}              \\
-  \verb|\citep{zhangkun1994}|              & \citep{zhangkun1994}              \\
-  \verb|\cite[42]{zhangkun1994}|           & \cite[42]{zhangkun1994}           \\
-  \verb|\cite{zhangkun1994,zhukezhen1973}| & \cite{zhangkun1994,zhukezhen1973} \\
-\end{tabular}
+\section{Linux}
 
+\section{libc}
 
-
-\section{著者-出版年制}
-
-著者-出版年制下的 \cs{cite} 跟 \cs{citet} 一样。
-
-\thusetup{
-  cite-style = author-year,
-}
-\begin{tabular}{l@{\space$\Rightarrow$\space}l}
-  \verb|\cite{zhangkun1994}|                & \cite{zhangkun1994}                \\
-  \verb|\citet{zhangkun1994}|               & \citet{zhangkun1994}               \\
-  \verb|\citep{zhangkun1994}|               & \citep{zhangkun1994}               \\
-  \verb|\cite[42]{zhangkun1994}|            & \cite[42]{zhangkun1994}            \\
-  \verb|\citep{zhangkun1994,zhukezhen1973}| & \citep{zhangkun1994,zhukezhen1973} \\
-\end{tabular}
-
-\vskip 2ex
-\thusetup{
-  cite-style = super,
-}
-注意，引文参考文献的每条都要在正文中标注
-\cite{zhangkun1994,zhukezhen1973,dupont1974bone,zhengkaiqing1987,%
-  jiangxizhou1980,jianduju1994,merkt1995rotational,mellinger1996laser,%
-  bixon1996dynamics,mahui1995,carlson1981two,taylor1983scanning,%
-  taylor1981study,shimizu1983laser,atkinson1982experimental,%
-  kusch1975perturbations,guangxi1993,huosini1989guwu,wangfuzhi1865songlun,%
-  zhaoyaodong1998xinshidai,biaozhunhua2002tushu,chubanzhuanye2004,%
-  who1970factors,peebles2001probability,baishunong1998zhiwu,%
-  weinstein1974pathogenic,hanjiren1985lun,dizhi1936dizhi,%
-  tushuguan1957tushuguanxue,aaas1883science,fugang2000fengsha,%
-  xiaoyu2001chubanye,oclc2000about,scitor2000project%
-}。
+\section{APP}
