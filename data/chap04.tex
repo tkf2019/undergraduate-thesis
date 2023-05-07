@@ -1,4 +1,4 @@
-% !TeX root = ../thesis.tex
+% !TeX root = ret../thesis.tex
 
 \chapter{软件实现}
 
@@ -8,15 +8,15 @@ QEMU \cite{qemu} 为操作系统和用户态程序提供虚拟的执行环境，
 QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我们可以不断完善设计草案。对 QEMU 的修改主要分为四个方面：
 
 \begin{itemize}
-    \item 指令翻译：引入对 UIPI 指令的译码和执行；
+    \item 指令翻译：引入对 \Iuipi 指令的译码和执行；
     \item CPU 状态：维护 CSR 寄存器等 CPU 状态；
-    \item 内存读写：UIPI 指令需要直接访问物理内存和 UINTC 外设，直接调用 void cpu\_physical\_memory\_rw(hwaddr addr, void *buf, hwaddr len, bool is\_write) 函数完成对物理地址的读写；
+    \item 内存读写：\Iuipi 指令需要直接访问物理内存和 UINTC 外设，直接调用 void cpu\_physical\_memory\_rw(hwaddr addr, void *buf, hwaddr len, bool is\_write) 函数完成对物理地址的读写；
     \item 核间中断：实现 UINTC 并向各个核发送中断。
 \end{itemize}
 
 \subsection{指令翻译}
 
-QEMU 翻译一条指令的大致过程为：从客户机指令（Guest Instructions）到中间码（TCG，Tiny Code Generator），最后再到宿主机指令（Host Instructions）。
+QEMU 翻译一条指令的过程为：从客户机指令（Guest Instructions）到中间码（TCG，Tiny Code Generator），最后再到宿主机指令（Host Instructions）。
 QEMU 的翻译机制类似于 CPU 流水线中的译码阶段，需要定义模式串来帮助 QEMU 在执行到某一指令时调用对应的辅助函数。模式串的定义位于 target/riscv/insn32.decode ：
 
 \lstset{language=C}
@@ -28,12 +28,12 @@ uipi_activate   0000011  00000 ..... 010 ..... 1111011 @r2
 uipi_deactivate 0000100  00000 ..... 010 ..... 1111011 @r2
 \end{lstlisting}
 
-以 uret 这条指令为例，在 target/riscv/insn\_trans 目录下,有各种指令的翻译过程，主要用来将指令解析的结果（寄存器，立即数等）传递给辅助函数，将客户机指令拆解为宿主机指令来模拟目标指令的功能。
-对于 uret 指令的执行涉及到较多 CPU 状态的变化，会对 pc ，CSR 等产生影响， 辅助函数的定义位于 target/riscv/helper\.h，通过宏定义 DEF\_HELPER\_x 来声明辅助函数，例如：
+以 \Iuret 这条指令为例，在 target/riscv/insn\_trans 目录下,有各种指令的翻译过程，主要用来将指令解析的结果（寄存器，立即数等）传递给辅助函数，将客户机指令拆解为宿主机指令来模拟目标指令的功能。
+对于 \Iuret 指令的执行涉及到较多 CPU 状态的变化，会对 pc ，CSR 等产生影响， 辅助函数的定义位于 target/riscv/helper\.h，通过宏定义 DEF\_HELPER\_x 来声明辅助函数，例如：
 
 \lstset{language=C}
 \begin{lstlisting}
-DEF_HELPER_1(uret, tl, env)
+DEF_HELPER_1(\Iuret, tl, env)
 DEF_HELPER_4(csrrw, tl, env, int, tl, tl)
 \end{lstlisting}
 
@@ -52,12 +52,12 @@ void helper_uipi_write(CPURISCVState *env, target_ulong src) {
 
 \subsection{CPU 状态}
 
-struct CPUArchState：CPU 状态结构体位于 target/riscv/cpu.h。这个结构同时考虑了 RV32、RV64、RV128 的情况，这些寄存器都是 CPU 运行时必要的状态。包括但不限于：
+CPU 状态的维护位于 target/riscv/cpu.h。这个结构同时考虑了 RV32、RV64、RV128 的情况，这些寄存器都是 CPU 运行时必要的状态。包括但不限于：
 
 \begin{itemize}
     \item pc
     \item 整数、浮点寄存器堆
-    \item CSR，有些寄存器是 M 态和 S 态复用的，例如 mstatus、 mip 等
+    \item CSR，有些寄存器是 M 态和 S 态复用的，例如 \Rmstatus、 \Rmip 等
     \item PMP 寄存器堆
     \item 通过 kernel\_addr、fdt\_addr 等从指定位置加载镜像
 \end{itemize}
@@ -67,11 +67,68 @@ struct CPUArchState：CPU 状态结构体位于 target/riscv/cpu.h。这个结�
 中断异常、CSR 等宏定义位于 target/riscv/cpu\_bits.h ，我们需要在其中添加和 U 态有关的中断控制位。
 CPU 中断异常处理函数位于 target/riscv/cpu\_helper.c 的最后，
 这个函数对中断异常原因进行判断，并根据 CPU 当前的特权级做不同的处理。
-这个函数只给出了 M 态和 S 态的中断异常处理，我们需要额外在此处加入委托给 U 态的中断异常处理，也就是读写 ustatus，ucause，uepc 等寄存器。
+这个函数只给出了 M 态和 S 态的中断异常处理，我们需要额外在此处加入委托给 U 态的中断异常处理，也就是读写 \Rustatus，\Rucause，\Ruepc 等寄存器。
 
 \subsection{核间中断}
 
+QEMU 支持对不同硬件环境的模拟，我们的运行环境主要为 -machine virt ，需要在这块板子中添加 UINTC 外设的配置并生成设备树信息。
 
+UINTC 代码实现位于 hw/intc/riscv\_uintc.c ，调用 riscv\_uintc\_realize 对 UINTC 进行初始化，将 UINTC 外设连接到总线上，并初始化总线地址空间。对外设中的状态寄存器（接收方状态寄存器，中断信号寄存器等）进行内存分配和初始化。
+通过调用 qdev\_connect\_gpio\_out 默认将 UINTC 的中断信号绑定至每个核的 \Ruip 寄存器中的 \FcsrUipUsip 位。
+
+\lstset{language=C}
+\begin{lstlisting}
+for (i = 0; i < num_harts; i++) {
+    CPUState *cpu = qemu_get_cpu(hartid_base + i);
+    RISCVCPU *rvcpu = RISCV_CPU(cpu);
+    qdev_connect_gpio_out(dev, i, qdev_get_gpio_in(DEVICE(rvcpu), IRQ_U_SOFT));
+}
+\end{lstlisting}
+
+最后完成对 UINTC 读写函数的注册，这样就可以直接通过物理地址访问 UINTC 外设的读写端口了：
+
+\lstset{language=C}
+\begin{lstlisting}
+static const MemoryRegionOps riscv_uintc_ops = {
+    .read = riscv_uintc_read,
+    .write = riscv_uintc_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 8,
+        .max_access_size = 8
+    }
+};
+\end{lstlisting}
+
+在 UINTC 的实现中，中断是通过每次写入 UINTC 的端口来触发的，这和真实的硬件实现其实存在差异。
+例如在 U 态，从目前的设计草案来看，需要同时满足以下几个条件才可以触发中断：
+
+\begin{itemize}
+    \item 当前特权级为 S 态
+    \item \Rustatus 中 \FcsrUstatusUie 位是 1
+    \item \Ruie 中 \FcsrUieUsie 位是 1
+    \item \Ruip 中 \FcsrUipUsip 位是 1
+\end{itemize}
+
+在硬件实现中，可以看成是几个信号的与操作，当其他所有信号都拉高时，任何一个信号从低电平拉高都会触发中断，根据 RISC-V 的特权态规范\cite{rvpriv110}，
+\Isret 会将特权态从 S 态切换回 U 态，\Iuret 会将 \Rustatus 中的 \FcsrUstatusUie 位设置为 \FcsrUstatusUpie 位，在这两条指令后执行的第一条指令都有可能被中断打断并立刻进入中断处理的流程，
+因此我们需要在 QEMU 中模拟这个过程，在 \Isret 和 \Iuret 指令中直接对上述条件进行判断和处理，例如在 \Isret 的辅助函数中：
+
+\lstset{language=C}
+\begin{lstlisting}
+if (riscv_has_ext(env, RVN)
+    && prev_priv == PRV_U
+    && get_field(env->mip, MIP_USIP)
+    && get_field(env->mstatus, MSTATUS_UIE)
+    && get_field(env->sideleg, MIP_USIP)) {
+    retpc = env->utvec;     // 直接跳转到U态中断处理入口
+    env->uepc = env->sepc;  // 指定 \Iuret 到同一条指令
+    mstatus = env->mstatus;
+    mstatus = set_field(mstatus, MSTATUS_UPIE, 1);
+    mstatus = set_field(mstatus, MSTATUS_UIE, 0);
+    env->mstatus = mstatus;
+}
+\end{lstlisting}
 
 \section{Linux}
 

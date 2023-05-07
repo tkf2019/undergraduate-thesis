@@ -1,26 +1,102 @@
-@inproceedings{8980352,
+@inproceedings{xpc,
   author    = {Du, Dong and Hua, Zhichao and Xia, Yubin and Zang, Binyu and Chen, Haibo},
-  booktitle = {2019 ACM/IEEE 46th Annual International Symposium on Computer Architecture (ISCA)},
   title     = {XPC: Architectural Support for Secure and Efficient Cross Process Call},
   year      = {2019},
-  volume    = {},
-  number    = {},
-  pages     = {671-684},
-  doi       = {}
+  isbn      = {9781450366694},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  url       = {https://doi.org/10.1145/3307650.3322218},
+  doi       = {10.1145/3307650.3322218},
+  booktitle = {Proceedings of the 46th International Symposium on Computer Architecture},
+  pages     = {671–684},
+  numpages  = {14},
+  keywords  = {accelerators, microkernel, operating system, inter-process communication},
+  location  = {Phoenix, Arizona},
+  series    = {ISCA '19}
+}
+
+@online{rvn,
+  author  = {You, Yuyang and He Kunpeng and Yu Tailai},
+  title   = {软硬协同对用户态中断},
+  year    = {2022},
+  url     = {https://gallium70.github.io/rv-n-ext-impl/intro.html}
+}
+
+@online{rvnissue
+  author  = {aswaterman},
+  title   = {{Document N extension}},
+  year    = {2017},
+  date    = {2017-02-23},
+  urldate = {2017-02-23},
+  url     = {https://github.com/riscv/riscv-isa-manual/issues/16}
 }
 
 @online{x86uintr,
+  author  = {Sohil Mehta},
+  title   = {{x86 User Interrupts support}},
+  year    = {2021},
+  date    = {2021-09-13},
+  urldate = {2021-09-13},
+  url     = {https://lwn.net/Articles/869140/}
+}
+
+@online{linuxuintr,
   author     = {Sohil Mehta},
-  title      = {{x86 User Interrupts support}},
+  title      = {uintr-linux-kernel},
   year       = {2021},
-  date       = {2021-09-13},
-  urldate    = {2021-09-13},
-  url        = {https://lwn.net/Articles/869140/},
+  month      = {September},
+  url        = {https://github.com/intel/uintr-linux-kernel/tree/rfc-v1},
 }
 
 @online{qemu,
-  author     = {},
-  title      = {About {QEMU}},
-  year       = {2023},
-  url        = {https://www.qemu.org/docs/master/about/index.html}
+  author = {Fabrice Bellard and the QEMU team},
+  title  = {About {QEMU}},
+  year   = {2023},
+  url    = {https://www.qemu.org/docs/master/about/index.html}
+}
+
+@techreport{rvpriv110,
+  author      = {Waterman, Andrew and Lee, Yunsup and Avizienis, Rimas and Patterson, David A. and Asanović, Krste},
+  title       = {{The RISC-V Instruction Set Manual Volume II: Privileged Architecture Version 1.10}},
+  institution = {EECS Department, University of California, Berkeley},
+  year        = {2017},
+  month       = {May},
+  url         = {https://riscv.org/wp-content/uploads/2017/05/riscv-privileged-v1.10.pdf}
+}
+
+@techreport{rocket,
+  author      = {Asanović, Krste and Avizienis, Rimas and Bachrach, Jonathan and Beamer, Scott and Biancolin, David and Celio, Christopher and Cook, Henry and Dabbelt, Daniel and Hauser, John and Izraelevitz, Adam and Karandikar, Sagar and Keller, Ben and Kim, Donggyu and Koenig, John and Lee, Yunsup and Love, Eric and Maas, Martin and Magyar, Albert and Mao, Howard and Moreto, Miquel and Ou, Albert and Patterson, David A. and Richards, Brian and Schmidt, Colin and Twigg, Stephen and Vo, Huy and Waterman, Andrew},
+  title       = {The Rocket Chip Generator},
+  institution = {EECS Department, University of California, Berkeley},
+  year        = {2016},
+  month       = {Apr},
+  url         = {http://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-17.html},
+  number      = {UCB/EECS-2016-17}
+}
+
+@online{zcu102,
+  organization = {Xilinx, Inc},
+  title        = {Zynq UltraScale+ MPSoC ZCU102 Evaluation Kit},
+  urldate      = {2022-05-26},
+  year         = {2022},
+  url          = {https://www.xilinx.com/products/boards-and-kits/ek-u1-zcu102-g.html}
+}
+
+@inbook{rvprivspec20211203,
+  title     = {The RISC-V Instruction Set Manual, Volume II: Privileged Architecture, Document Version 20211203},
+  editor    = {Andrew Waterman and Krste Asanovi´c and John Hauser},
+  publisher = {RISC-V International},
+  year      = {2023},
+  month     = {April},
+  url       = {https://github.com/riscv/riscv-isa-manual/releases/download/riscv-isa-release-5b7252f-2023-04-27/riscv-privileged.pdf}
+}
+
+@manual{inteluintr,
+  organization = {Intel Corporation},
+  title        = {Intel® Architecture Instruction Set Extensions and Future Features Programming Reference},
+  year         = {2021},
+  month        = {May},
+  chapter      = {11},
+  pages        = {11-1},
+  url          = {https://www.intel.com/content/www/us/en/develop/download/intel-architecture-instruction-set-extensions-programming-reference.html}
 }

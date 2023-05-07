@@ -1,3 +1,198 @@
 % !TeX root = ../thesis.tex
 
 \chapter{设计草案}
+
+在 RISC-V N 扩展的基础上，我们提出了 RISC-V 用户态中断扩展，通过引入新的 CSR、指令以及外部中断控制器，可以实现高效的用户态跨核中断。
+在普通的中断处理流程中，我们默认只有 M 态和 S 态可以接收或发送中断，且运行在这些特权态下的软件是可以信任的，但用户态程序的行为并不一定是合法的。
+因此通过硬件的参与，我们的设计在 N 扩展的基础上，解决了如下几个问题，这些问题都有可能导致某个核正常执行流程被非法的中断打断：
+
+\begin{itemize}
+    \item 发送方尝试向未注册的目标核发送中断
+    \item 接收方尝试修改自己的控制信息，将来自发送方的中断重定向到其他核
+    \item 接收方没有在目标核上运行，但发送方发送了用户态中断
+\end{itemize}
+
+若无特殊说明，以下的描述均基于 \textbf{64} 位 RISC-V 指令架构。
+
+\section{CSR}
+
+\textbf{\Rsuirs}(User-Interrupt Receiver Status) 寄存器和 \textbf{\Rsuist}(User-Interrupt Sender Table) 寄存器分别用来索引接收方和发送方的状态。
+这两个寄存器均被设置为 U 态不可访问，U 态只能通过 \Iuipi 指令间接地应用它们包含的信息。
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-0}
+        \begin{tabular}{|l|l|l|}
+            \hline
+            对应位 & 名称 & 描述 \\
+            \hline
+            0:15 & UIRS Index & 接收方序号 \\
+            \hline
+            62:16 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            63 & Enable & 使能位，置 1 表示使能 \\
+            \hline
+        \end{tabular}
+        \caption{接收方状态寄存器}
+    \end{threeparttable}
+\end{table}
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-1}
+        \begin{tabular}{|l|l|l|}
+            \hline
+            对应位 & 名称 & 描述 \\
+            \hline
+            0:43 & PPN & 发送方状态表基址页号 \\
+            \hline
+            44:55 & Size & 发送方状态表页面数量 \\
+            \hline
+            62:56 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            63 & Enable & 使能位，置 1 表示使能 \\
+            \hline
+        \end{tabular}
+        \caption{发送方状态寄存器}
+    \end{threeparttable}
+\end{table}
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-2}
+        \begin{tabular}{|l|l|l|}
+            \hline
+            对应位 & 名称 & 描述 \\
+            \hline
+            0 & Valid & 有效位，置 1 表示有效 \\
+            \hline
+            15:1 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            31:16 & Sender Vector & 中断向量 \\
+            \hline
+            47:32 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            63:48 & UIRS Index & 接收方序号 \\
+            \hline
+        \end{tabular}
+        \caption{发送方状态}
+    \end{threeparttable}
+\end{table}
+
+\newpage
+
+\section{UINTC}
+
+用户态中断控制器（UINTC，User-Interrupt Controller）作为设计的核心部分，主要负责维护接收方的状态信息，并响应来自读写端口的请求完成对应的操作。
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-3}
+        \begin{tabular}{|l|l|l|}
+            \hline
+            对应位 & 名称 & 描述 \\
+            \hline
+            0 & Active & 活跃位，置 1 表示可以向目标核发送中断 \\
+            \hline
+            1 & Mode & 默认置 1，置 1 表示 64 位架构，置 0 表示 32 位架构 \\
+            \hline
+            15:2 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            31:16 & Hartid & 正在运行该接受方的核号 \\
+            \hline
+            63:32 & Reserved & 保留位，硬件会忽略这些位 \\
+            \hline
+            127:64 & Pending Requests & 每一位对应一个中断向量，置 1 表示接收到中断请求 \\
+            \hline
+        \end{tabular}
+        \caption{接收方状态}
+    \end{threeparttable}
+\end{table}
+
+UINTC 为每一个接收方分配 32 B 的读写端口，每个操作都有可能从端口读出或向端口写入 8 B 数据，因此总共对应 8 种不同的操作，下表为不同操作对应的地址偏移量：
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-4}
+        \begin{tabular}{|l|l|l|}
+            \hline
+            偏移量 & 读操作 & 写操作 \\
+            \hline
+            0x00 & Reserved & SEND \\
+            \hline
+            0x08 & READ\_LOW & WRITE\_LOW \\
+            \hline
+            0x10 & READ\_HIGH & WRITE\_HIGH \\
+            \hline
+            0x18 & GET\_ACT & SET\_ACT \\
+            \hline
+        \end{tabular}
+        \caption{UINTC 操作码}
+    \end{threeparttable}
+\end{table}
+
+其中 LOW 对应接收方状态的低 64 位，包括 Active，Mode，Hartid 等信息；HIGH 对应接收方状态的高 64 位，也就是 Pending Requests 。
+
+\textbf{SEND} 操作会将数据中包含的中断向量写入到对应接收方状态的 Pending Requests 中，当 Active 为 1 且 Pending Requests 不为 0 时，UINTC 会拉高对应核的 \FcsrUipUsip 位。
+
+\textbf{READ\_HIGH} 操作在读取 Pending Requests 后会将其清 0，而 \textbf{WRITE\_HIGH} 操作则是将新的数据和原来的 Pending Requests 按位或，这样做是确保读写操作之间的中断请求不会被覆盖。
+
+\textbf{SET\_ACT} 操作会默认将新的数据的最低位写入到 Active 中。
+
+CPU 通过执行 \Isd 或 \Ild 指令向总线发送读写请求，读写地址会被转化为不同的接收方序号，以支持 512 个接收方的 UINTC 为例，地址映射如下表所示：
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:three-part-table-5}
+        \begin{tabular}{|l|l|l|l|l|}
+            \hline
+            偏移量 & 位宽 & 属性 & 名称 & 描述 \\
+            \hline
+            0x00000000 & 32 B & RW & UIRS0 & 0 号接收方 \\
+            \hline
+            0x00000020 & 32 B & RW & UIRS1 & 1 号接收方 \\
+            \hline
+            ... & ... & ... & ... & ... \\
+            \hline
+            0x00003FC0 & 32 B & RW & UIRS511 & 511 号接收方 \\
+            \hline
+        \end{tabular}
+        \caption{UINTC 地址映射}
+    \end{threeparttable}
+\end{table}
+
+\section{UIPI}
+
+\Iuipi 是可以在 U 态直接执行的 R 型指令，共包括五条不同功能的指令：
+
+\begin{itemize}
+    \item[0] \textbf{\Iuipisend rs1}：发送方发送用户态中断
+    \item[1] \textbf{\Iuipiread rd}：接收方读取并清空中断等待位
+    \item[2] \textbf{\Iuipiwrite rs1}：接收方写入中断等待位
+    \item[3] \textbf{\Iuipiact}：接收方准备接收用户态中断
+    \item[4] \textbf{\Iuipideact}：接收方拒绝接收用户态中断
+\end{itemize}
+
+这些指令执行到最后都需要读或写 UINTC 的端口，对 UINTC 中状态的影响与直接访问物理地址读写的影响是一致的。由于指令执行需要直接排除缓存系统访问外设，程序需要考虑指令乱序的问题。
+
+\Iuipisend 指令传入发送方状态表的序号，根据 \Rsuist 寄存器中发送方状态表基址来读取内存中对应的表项，发送方在执行 \Iuipisend 指令后读到的物理地址为：
+$$
+( PPN << 0xC ) + ( rs1 << 0x3 )
+$$
+其中页面大小默认为 4 KB，发送方状态表项的大小默认为 8 字节。
+若最后计算的地址超出了状态表的最大容量，该指令执行失败。
+若当前 \Rsuist 寄存器中使能位为 0，则该指令执行失败。
+硬件通过读出发送方指定的表项来获取中断向量和接收方序号，并写入 UINTC 对应的地址完成一次中断的发送。
+
+其他的四条指令都需要根据 \Rsuirs 寄存器中接收方序号来获取 UINTC 读写端口的物理地址。
+若当前 \Rsuirs 寄存器中使能位为 0，则该指令执行失败。
+
+\Iuipiread 指令直接访问 UINTC HIGH 端口读取数据；\Iuipiwrite 直接访问 UINTC HIGH 端口写入数据；
+\Iuipiact 指令和 \Iuipideact 指令直接访问 UINTC ACT 端口并向 Active 位写入 0 或 1 。
+
