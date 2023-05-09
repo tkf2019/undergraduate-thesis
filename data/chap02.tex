@@ -3,12 +3,58 @@
 \chapter{背景介绍}
 
 \section{RISC-V N 扩展}
+
+RISC-V 是一种基于 RISC 原则的指令集架构，由加州大学伯克利分校开发，具有模块化、可扩展等特点。RISC-V N 扩展是在 RISC-V 特权级指令规范 v1.12 的草案中提出的，该扩展的设计思路是为 U 态提供一套和 M 态和 S 态类似的中断异常处理机制。截至目前，该扩展已被废除，因为 N 扩展的应用扩展尚不明朗且没有足够的工作去推动其完善和实现。为了引入用户态中断扩展，我们需要复现 RISC-V N 扩展的设计来支持基本的用户态中断处理流程。
+
 \subsection{指令集规范}
-\subsection{Rocket Chip 实现}
-\subsection{rCore 实现}
+
+\begin{table}
+    \centering
+    \begin{threeparttable}[c]
+        \label{tab:rvn}
+        \begin{tabular}{|l|l|}
+            \hline
+            名称 & 描述 \\
+            \hline
+            \Rustatus & U 态全局中断使能 \\
+            \hline
+            \Rutvec & U 态陷入向量模式与基址\\
+            \hline
+            \Ruip & U 态待处理中断（时钟中断、软件中断、外部中断） \\
+            \hline
+            \Ruie & U 态使能中断 （时钟中断、软件中断、外部中断）\\
+            \hline
+            \Ruscratch & U 态暂存寄存器 \\
+            \hline
+            \Ruepc & U 态中断或异常指令 pc \\
+            \hline
+            \Rucause & U 态陷入原因 \\
+            \hline
+            \Rsideleg & S 态中断委托 \\
+            \hline
+            \Rsedeleg & S 态异常委托 \\
+            \hline
+        \end{tabular}
+        \caption{RISC-V N CSRs}
+    \end{threeparttable}
+\end{table}
+
+RISC-V N 扩展中的 \Iuret 指令与 \Imret 和 \Isret 类似，将 \Rustatus 寄存器的 \FcsrUstatusUpie 赋值给 \FcsrUstatusUie ，然后跳转至 \Ruepc。
+
+\subsection{外部中断}
+
+尤予阳等人对 RISC-V N 扩展进行了进一步完善，在 PLIC 中为 U 态额外分配一套上下文，并将 PLIC 中断信号与 CPU 的 \FcsrUipUsip 寄存器连接。他们的工作主要分为两个方面，软件方面对 QEMU 进行修改来验证设计方案，基于 rCore 操作系统应用设计方案；硬件方面对 Rocket Chip 进行修改，并在 FPGA 上对设计方案进行了性能评估。通过将用户态中断应用在用户态串口驱动中，证明了其在吞吐率和延时方面的性能表现优于内核态驱动。
 
 \section{x86 用户态中断}
 
-\subsection{指令集规范}
-\subsection{Linux 实现}
-\subsection{QEMU 实现}
+2021 年 5 月发布的 Intel 指令集架构扩展 \cite{inteluintr} 中加入了基于 x86 指令集架构的用户态中断扩展。x86 的设计主要有以下几个特点：
+
+\begin{itemize}
+    \item[1.] 发送方和接收方状态在内存中进行维护；
+    \item[2.] {\tt SENDUIPI} 指令需要经过两次读内存和一次写内存操作；
+    \item[3.] 用户态中断有一套独立的控制流程，需要通过 MSR 辅助完成。
+\end{itemize}
+
+Linux 中加入了对 x86 用户态中断扩展的支持，并通过测试表明基于用户态中断的 IPC 机制相比于信号、eventfd 和管道等机制有明显的性能提升\cite{x86uintr}。
+
+项晨东等人在 QEMU 加入了对 x86 用户态中断扩展的支持，成功运行了上述 Linux 分支并复现了性能测试结果。
