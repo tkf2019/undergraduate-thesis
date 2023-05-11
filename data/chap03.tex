@@ -1,6 +1,6 @@
 % !TeX root = ../thesis.tex
 
-\chapter{设计草案}
+\chapter{硬件设计方案}
 
 在 RISC-V N 扩展的基础上，我们提出了 RISC-V 用户态中断扩展，通过引入新的 CSR、指令以及外部中断控制器，可以实现高效的用户态跨核中断。
 在普通的中断处理流程中，默认只有 M 态和 S 态可以接收或发送中断，且运行在这些特权态下的软件是可以信任的，但用户态程序的行为并不一定是合法的。
@@ -12,7 +12,7 @@
     \item 接收方没有在目标核上运行，但发送方发送了用户态中断
 \end{itemize}
 
-\section{CSR}
+\section{整体架构}
 
 \begin{figure}
     \centering
@@ -21,6 +21,8 @@
     \label{fig:uintr}
 \end{figure}
 
+\section{CPU 状态}
+
 \textbf{\Rsuirs}(User-Interrupt Receiver Status) 寄存器和 \textbf{\Rsuist}(User-Interrupt Sender Table) 寄存器分别用来索引接收方和发送方的状态。
 这两个寄存器均被设置为 U 态不可访问，U 态只能通过 \Iuipi 指令间接地应用它们包含的信息。
 若无特殊说明，以下的描述均基于 \textbf{64} 位 RISC-V 指令架构。
@@ -28,7 +30,6 @@
 \begin{table}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:suirs}
         \begin{tabular}{|l|l|l|}
             \hline
             对应位 & 名称 & 描述 \\
@@ -41,13 +42,13 @@
             \hline
         \end{tabular}
         \caption{接收方状态寄存器}
+        \label{tab:suirs}
     \end{threeparttable}
 \end{table}
 
 \begin{table}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:suist}
         \begin{tabular}{|l|l|l|}
             \hline
             对应位 & 名称 & 描述 \\
@@ -62,6 +63,7 @@
             \hline
         \end{tabular}
         \caption{发送方状态寄存器}
+        \label{tab:suist}
     \end{threeparttable}
 \end{table}
 
@@ -70,7 +72,6 @@
 \begin{table}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:uiss}
         \begin{tabular}{|l|l|l|}
             \hline
             对应位 & 名称 & 描述 \\
@@ -87,19 +88,19 @@
             \hline
         \end{tabular}
         \caption{发送方状态}
+        \label{tab:uiss}
     \end{threeparttable}
 \end{table}
 
 发送方状态在内存中进行维护，表项内容如表 \ref{tab:uiss} 所示。
 
-\section{UINTC}
+\section{用户态中断控制器}
 
 用户态中断控制器（UINTC，User-Interrupt Controller）作为设计的核心部分，主要负责维护接收方的状态信息，并响应来自读写端口的请求完成对应的操作。
 
 \begin{table}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:uirs}
         \begin{tabular}{|l|l|l|}
             \hline
             对应位 & 名称 & 描述 \\
@@ -118,15 +119,16 @@
             \hline
         \end{tabular}
         \caption{接收方状态}
+        \label{tab:uirs}
     \end{threeparttable}
 \end{table}
 
 UINTC 为每一个接收方分配 32 B 的读写端口，每个操作都有可能从端口读出或向端口写入 8 B 数据，因此总共对应 8 种不同的操作，下表为不同操作对应的地址偏移量：
 
 \begin{table}
+    \label{tab:uintc}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:uintc}
         \begin{tabular}{|l|l|l|}
             \hline
             偏移量 & 读操作 & 写操作 \\
@@ -157,7 +159,6 @@ CPU 通过执行 \Isd 或 \Ild 指令向总线发送读写请求，读写地址�
 \begin{table}
     \centering
     \begin{threeparttable}[c]
-        \label{tab:three-part-table-5}
         \begin{tabular}{|l|l|l|l|l|}
             \hline
             偏移量 & 位宽 & 属性 & 名称 & 描述 \\
@@ -172,10 +173,11 @@ CPU 通过执行 \Isd 或 \Ild 指令向总线发送读写请求，读写地址�
             \hline
         \end{tabular}
         \caption{UINTC 地址映射}
+        \label{tab:uintc2}
     \end{threeparttable}
 \end{table}
 
-\section{UIPI}
+\section{UIPI 指令}
 
 \Iuipi 是可以在 U 态直接执行的 R 型指令，共包括五条不同功能的指令：
 
@@ -208,7 +210,7 @@ $$
     \item \Iuipideact 指令直接访问 UINTC ACT 端口并向 Active 位写入 0
 \end{itemize}
 
-\section{API}
+\section{软件接口}
 
 \begin{figure}
     \centering

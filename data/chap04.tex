@@ -1,11 +1,9 @@
-% !TeX root = ret../thesis.tex
+% !TeX root = ../thesis.tex
 
-\chapter{软件实现}
-
-\section{QEMU}
+\chapter{功能级硬件仿真模拟}
 
 QEMU \cite{qemu} 为操作系统和用户态程序提供虚拟的执行环境，通过动态的二进制转换，模拟 CPU 的行为，同时支持多种外设的仿真，在系统开发中扮演着重要角色。
-QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我们可以不断完善设计草案。对 QEMU 的修改主要分为四个方面：
+QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我们可以不断完善设计方案。对 QEMU 的修改主要分为四个方面：
 
 \begin{itemize}
     \item 指令翻译：引入对 \Iuipi 指令的译码和执行；
@@ -14,7 +12,7 @@ QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我�
     \item 核间中断：实现 UINTC 并向各个核发送中断。
 \end{itemize}
 
-\subsection{指令翻译}
+\section{指令翻译}
 
 QEMU 翻译一条指令的过程为：从客户机指令（Guest Instructions）到中间码（TCG，Tiny Code Generator），最后再到宿主机指令（Host Instructions）。
 QEMU 的翻译机制类似于 CPU 流水线中的译码阶段，需要定义模式串来帮助 QEMU 在执行到某一指令时调用对应的辅助函数。模式串的定义位于 target/riscv/insn32.decode ：
@@ -47,7 +45,7 @@ void helper_uipi_write(CPURISCVState *env, target_ulong src) {
 }
 \end{lstlisting}
 
-\subsection{CPU 状态}
+\section{CPU 状态}
 
 CPU 状态的维护位于 target/riscv/cpu.h。这个结构同时考虑了 RV32、RV64、RV128 的情况，这些寄存器都是 CPU 运行时必要的状态。包括但不限于：
 
@@ -66,7 +64,7 @@ CPU 中断异常处理函数位于 target/riscv/cpu\_helper.c 的最后，
 这个函数对中断异常原因进行判断，并根据 CPU 当前的特权级做不同的处理。
 这个函数只给出了 M 态和 S 态的中断异常处理，我们需要额外在此处加入委托给 U 态的中断异常处理，也就是读写 \Rustatus，\Rucause，\Ruepc 等寄存器。
 
-\subsection{核间中断}
+\section{核间中断}
 
 QEMU 支持对不同硬件环境的模拟，需要在 virt 硬件环境中添加 UINTC 外设的配置并生成设备树信息。
 
@@ -96,7 +94,7 @@ static const MemoryRegionOps riscv_uintc_ops = {
 \end{lstlisting}
 
 在 UINTC 的实现中，中断是通过每次写入 UINTC 的端口来触发的，这和真实的硬件实现其实存在差异。
-例如在 U 态，从目前的设计草案来看，需要同时满足以下几个条件才可以触发中断：
+例如在 U 态，从目前的设计方案来看，需要同时满足以下几个条件才可以触发中断：
 
 \begin{itemize}
     \item 当前特权级为 S 态
@@ -124,152 +122,3 @@ if (riscv_has_ext(env, RVN)
     env->mstatus = mstatus;
 }
 \end{lstlisting}
-
-\section{Linux}
-
-Linux \cite{linux} 是世界上最著名的开源操作系统。Linux 是标准的宏内核，可以在其上运行多种应用。目前 Linux 已经支持在 RISC-V 硬件平台上运行，也能在 QEMU 模拟的 RISC-V 硬件环境上运行。为了支持用户态中断并对其性能进行更深入的分析，我们对 Linux 6.0 版本进行了修改。针对 Linux 的修改主要分为三个部分：
-
-\begin{itemize}
-    \item 添加 UINTC 驱动并让 Linux 识别 UINTC 的设备树信息
-    \item 接收方陷入内核前的状态的保存与恢复
-    \item 注册并实现系统调用
-\end{itemize}
-
-\subsection{UINTC 驱动}
-
-在 QEMU 的 virt 硬件环境中添加设备树生成代码，最后生成的设备树节点内容如下：
-
-\lstset{basicstyle=\footnotesize\tt}
-\begin{lstlisting}
-uintc@2f10000 {
-    interrupts-extended = <0x08 0x00 0x06 0x00 0x04 0x00 0x02 0x00>;
-    reg = <0x00 0x2f10000 0x00 0x4000>;
-    interrupt-controller;
-    compatible = "riscv,uintc0";
-};
-\end{lstlisting}
-
-其中各个字段的含义为：
-
-\begin{itemize}
-    \item \textbf{interrupts-extended} 连接到每个核 \Ruip 寄存器的 \FcsrUipUsip 位
-    \item \textbf{interrupts-controller} 表示该设备是一个接收中断的控制器，这里加上是为了方便 Linux 识别，实际上 UINTC 并没有接收外部中断
-    \item \textbf{compatible} 表示设备名称，Linux 内注册驱动时应该与之对应
-\end{itemize}
-
-驱动代码位于 drivers/irqchip/irq-riscv-uintc.c ，Linux 对 UINTC 进行的初始化过程如下：
-
-\begin{itemize}
-    \item 解析设备树获取外设对应的物理地址范围
-    \item 初始化全局控制结构 \ref{code:uintcpriv} 并保存外设信息
-    \item 调用 \mintinline[breaklines]{c}{void __iomem *ioremap(phys_addr_t addr, size_t size)} 完成内核物理地址到虚拟地址的映射，内核可以通过虚拟地址直接访问 UINTC 读写端口
-    \item 初始化全局位图管理 UINTC 中已分配的槽位
-\end{itemize}
-
-\label{code:uintcpriv}
-\begin{lstlisting}[style=CStyle]
-    struct uintc_priv {
-        struct cpumask lmask; // 位图记录已连接的 CPU
-        void __iomem *regs;   // UINTC 在内核地址空间映射的起始地址
-        resource_size_t size; // UINTC 地址范围大小
-        u32 nr;               // UINTC 槽位数量
-        void *mask;           // 位图记录已分配的槽位
-        spinlock_t lock;      // 互斥锁
-    };
-\end{lstlisting}
-
-\subsection{状态保存与恢复}
-
-arch/riscv/kernel/entry.S 是 Linux 在 RISC-V 硬件平台上运行时的陷入入口，涉及上下文的保存与恢复、针对不同陷入原因跳转到对应的处理函数入口、针对不同系统调用号跳转到系统调用向量表对应的入口等。
-
-Linux 中线程也被称为轻量级进程（LWP, Light-weight process）\cite{linuxbook}，如无特殊说明，描述中默认使用进程指代进程或线程。考虑到在某些负载环境下，接收方进程可能在不同核上迁移，需要对用户态的控制状态进行保存与恢复，主要对 \Rutvec 、\Ruscratch、\Ruepc 三个寄存器进行保存。此外还需要在陷入时将接收方状态的 Active 位置 0 确保当这个核运行其他进程时不会被中断。接收方被唤醒并准备在某个核上运行前，除了对上述三个寄存器进行恢复外，还需要设置 \Rsuirs 寄存器，注意到当进程主动让权时，内核会两次进入 resume\_userspace 这个代码段，因此只能在 restore\_all 这个代码段重新将接收方状态的 Active 位置 1 确保被唤醒的是真正运行在这个核上的进程。
-
-\subsection{进程管理}
-
-在 arch/riscv/kernel/uintr.c 中添加用户态中断相关代码，主要涉及以下内容：
-
-\begin{itemize}
-    \item 控制结构定义和初始化：在进程控制块中维护发送方和接收方的状态
-    \item 进程资源分配和回收：文件描述符，进程控制块内的状态，发送方状态表等
-    \item 系统调用实现：在系统调用向量表中注册系统调用号，并通过 SYSCALL\_DEFINEx 宏声明并实现系统调用函数
-\end{itemize}
-
-\section{libc}
-
-\subsection{API 实现}
-
-对系统调用进一步封装，包括设置 U 态 CSR 、上下文保存与恢复以及读取并更新 UINTC 中的 Pending Requests 等：
-
-\begin{lstlisting}[style=CStyle]
-    #include "uintr.h"
-
-    extern void __handler_entry(struct __uintr_frame* frame, void* handler) {
-        uint64_t irqs = uipi_read();
-        csr_clear(CSR_UIP, MIE_USIE);
-        uint64_t (*__handler)(struct __uintr_frame * frame, uint64_t) = handler;
-        irqs = __handler(frame, irqs);
-        uipi_write(irqs);
-    }
-    static uint64_t __register_receiver(void* handler) {
-        // 设置中断处理函数入口
-        csr_write(CSR_UTVEC, uintrvec);
-        csr_write(CSR_USCRATCH, handler);
-        // 使能 U 态中断处理
-        csr_set(CSR_USTATUS, USTATUS_UIE);
-        csr_set(CSR_UIE, MIE_USIE);
-        int ret = __syscall0(__NR_uintr_register_receiver);
-        // 使能 UINTC 
-        uipi_activate();
-        return ret;
-    }
-    // 用户调用接口
-    #define uintr_register_receiver(handler) __register_receiver(handler)
-\end{lstlisting}
-
-注意到上述代码并没将用户注册的函数直接赋值给 \Rutvec 寄存器，而是赋值给了 \Ruscratch ，这是因为在汇编代码中需要先将通用寄存器保存在栈上，然后才能开始执行用户注册的函数。
-
-\subsection{APP 示例}
-
-根据图 \ref{fig:uintr2} 中 RISC-V 用户态中断的工作流程，可以实现一个简单的进程间通信应用。
-
-\begin{lstlisting}[style=CStyle]
-    volatile unsigned int uintr_received; // volatile 避免编译优化
-    unsigned int uintr_fd;
-
-    uint64_t uintr_handler(struct __uintr_frame *ui_frame, uint64_t irqs) {
-        uintr_received = 1; // 设置标志位
-        return 0;
-    }
-
-    void *sender_thread(void *arg) {
-        int uipi_index;
-        // 注册发送方状态表项
-        uipi_index = uintr_register_sender(uintr_fd);
-        // 发送用户态中断
-        uipi_send(uipi_index);
-        return NULL;
-    }
-
-    int main() {
-        pthread_t pt;
-        int ret;
-        // 注册接收方中断处理函数
-        if (uintr_register_receiver(uintr_handler))
-            exit(EXIT_FAILURE);
-        // 注册文件描述符
-        ret = uintr_create_fd(1);
-        if (ret < 0) exit(EXIT_FAILURE);
-        uintr_fd = ret;
-        // 创建发送方
-        if (pthread_create(&pt, NULL, &sender_thread, NULL))
-            exit(EXIT_FAILURE);
-        // 忙等待标志位
-        while (!uintr_received);
-        pthread_join(pt, NULL);
-        close(uintr_fd);
-        // 正常退出
-        exit(EXIT_SUCCESS);
-    }
-\end{lstlisting}
-
-接收方注册中断处理函数，注册文件描述符，创建发送方进程，并忙等待标志位；发送方进程注册后发送一个中断便直接退出；接收方收到中断并陷入中断处理函数后设置标志位，回到正常流程发现标志位已被设置，继续执行直到退出。
