@@ -39,9 +39,9 @@
 
 系统软件的启动流程如图 \ref{fig:boot} 所示。BootROM 为 Rocket Chip 内置的启动代码，在构建时会提前写入到模块中，跳转地址默认为内存的起始地址。
 
-OpenSBI (RISC-V Open Source Supervisor Binary Interface) 是 RISC-V 架构下的 Bootloader，支持通用 SBI 接口，支持 dynamic、jump、payload 三种启动方式。本文的实验采用 payload 启动方式，OpenSBI 镜像会根据 Linux 镜像和设备树的文件位置一起构建。OpenSBI 会在运行时将 Linux 镜像加载到目标地址，并将设备树放在指定的地址。跳转到 Linux 镜像前，OpenSBI 会将核号、设备树地址等信息传递给 Linux 用于 Linux 进一步的初始化。
+OpenSBI (RISC-V Open Source Supervisor Binary Interface) \cite{opensbi} 是 RISC-V 架构下的 Bootloader，支持通用 SBI 接口，支持 dynamic、jump、payload 三种启动方式。本文的实验采用 payload 启动方式，OpenSBI 镜像会根据 Linux 镜像和设备树的文件位置一起构建。OpenSBI 会在运行时将 Linux 镜像加载到目标地址，并将设备树放在指定的地址。跳转到 Linux 镜像前，OpenSBI 会将核号、设备树地址等信息传递给 Linux 用于 Linux 进一步的初始化。
 
-Buildroot 是一个构建嵌入式 Linux 系统的框架。本文的实验使用 Buildroot 构建根文件系统，并在 Linux 的编译选项中指定文件系统镜像的位置，让 Linux 镜像与文件系统镜像一起构建，并将该文件系统作为 initramfs 。此外，为了让 Linux 在启动时可以打印日志，需要在设备树中添加启动参数指定 earlycons 。
+Buildroot \cite{buildroot} 是一个构建嵌入式 Linux 系统的框架。本文的实验使用 Buildroot 构建根文件系统，并在 Linux 的编译选项中指定文件系统镜像的位置，让 Linux 镜像与文件系统镜像一起构建，并将该文件系统作为 initramfs 。此外，为了让 Linux 在启动时可以打印日志，需要在设备树中添加启动参数指定 earlycons 。
 
 如前文所述，PS 可以对 Rocket Chip 进行复位，在复位前，需要把构建好的 OpenSBI 镜像拷贝到内存中，这部分内存以 reserved-memory 的形式挂载到 PS 的 /dev/mem 文件上，PS 可以直接对该文件进行 mmap 操作完成镜像的写入。
 
@@ -50,6 +50,12 @@ Linux 启动后，可以在主机上连接开发板的串口并看到输出：
 \section{功能测试}
 
 \subsection{Verilator 仿真测试}
+
+Verilator \cite{verilator} 是一款开源的硬件描述语言仿真器，可以生成 C++仿真代码并在主机上模拟硬件电路的行为。相比于传统的基于事件的仿真器，Verilator 可以更快速、准确地模拟大型电路。
+Rocket Chip 集成了 Verilator 仿真器，可以在综合前对 Rocket Chip 进行行为仿真，通过观察 Verilator 生成的波形，可以提早发现并解决硬件逻辑问题，减少硬件调试带来的开销。
+
+riscv-tests \cite{riscvtests} 是一个开源的验证 RISC-V 处理器正确性的测试集，由 RISC-V 基金会开发和维护，包括了 RISC-V 指令集的大部分指令和特性的测试。Rocket Chip 集成该项目并利用 Verilator 对这些测例进行仿真。
+基于这一项目，我们实现了多个针对 RISC-V 用户态中断的测例，覆盖了读写 CSR 、中断处理、UIPI 指令等特性。
 
 \subsection{软件接口测试}
 
@@ -96,6 +102,10 @@ Linux 启动后，可以在主机上连接开发板的串口并看到输出：
 \end{lstlisting}
 
 接收方注册中断处理函数，注册文件描述符，创建发送方进程，并忙等待标志位；发送方进程注册后发送一个中断便直接退出；接收方收到中断并陷入中断处理函数后设置标志位，回到正常流程发现标志位已被设置，继续执行直到退出。
+
+
+
+分别在 QEMU 模拟器和 Rocket Chip 上启动修改后的 Linux 并运行该测例，可以看到发送方和接收方均正常退出，并释放占用的内核资源，包括文件描述符、发送方状态表等。
 
 \section{性能测试}
 

@@ -7,9 +7,9 @@
 Linux \cite{linux} 是世界上最著名的开源操作系统。Linux 是标准的宏内核，可以在其上运行多种应用。目前 Linux 已经支持在 RISC-V 硬件平台上运行，也能在 QEMU 模拟的 RISC-V 硬件环境上运行。为了支持用户态中断并对其性能进行更深入的分析，我们对 Linux 6.0 版本进行了修改。针对 Linux 的修改主要分为三个部分：
 
 \begin{itemize}
-    \item 添加 UINTC 驱动并让 Linux 识别 UINTC 的设备树信息
-    \item 接收方陷入内核前的状态的保存与恢复
-    \item 注册并实现系统调用
+    \item 添加 UINTC 驱动并让 Linux 识别 UINTC 的设备树信息；
+    \item 接收方陷入内核前的状态的保存与恢复；
+    \item 注册并实现系统调用。
 \end{itemize}
 
 \subsection{UINTC 驱动支持}
@@ -29,35 +29,58 @@ Linux \cite{linux} 是世界上最著名的开源操作系统。Linux 是标准�
 驱动代码位于 drivers/irqchip/irq-riscv-uintc.c ，Linux 对 UINTC 进行的初始化过程如下：
 
 \begin{itemize}
-    \item 解析设备树获取外设对应的物理地址范围
-    \item 初始化全局控制结构 \ref{code:uintcpriv} 并保存外设信息
-    \item 调用 \mintinline[breaklines]{c}{void __iomem *ioremap(phys_addr_t addr, size_t size)} 完成内核物理地址到虚拟地址的映射，内核可以通过虚拟地址直接访问 UINTC 读写端口
-    \item 初始化全局位图管理 UINTC 中已分配的槽位
+    \item 解析设备树获取外设对应的物理地址范围；
+    \item 初始化全局控制结构 \ref{code:uintcpriv} 并保存外设信息；
+    \item 调用 \mintinline[breaklines]{c}{void __iomem *ioremap(phys_addr_t addr, size_t size)} 完成内核物理地址到虚拟地址的映射，内核可以通过虚拟地址直接访问 UINTC 读写端口；
+    \item 初始化全局位图管理 UINTC 中已分配的槽位。
 \end{itemize}
 
 \subsection{状态保存与恢复}
 
 arch/riscv/kernel/entry.S 是 Linux 在 RISC-V 硬件平台上运行时的陷入入口，涉及上下文的保存与恢复、针对不同陷入原因跳转到对应的处理函数入口、针对不同系统调用号跳转到系统调用向量表对应的入口等。
 
-Linux 中线程也被称为轻量级进程（LWP, Light-weight process）\cite{linuxbook}，如无特殊说明，描述中默认使用进程指代进程或线程。考虑到在某些负载环境下，接收方进程可能在不同核上迁移，需要对用户态的控制状态进行保存与恢复，主要对 \Rutvec 、\Ruscratch、\Ruepc 三个寄存器进行保存。此外还需要在陷入时将接收方状态的 Active 位置 0 确保当这个核运行其他进程时不会被中断。接收方被唤醒并准备在某个核上运行前，除了对上述三个寄存器进行恢复外，还需要设置 \Rsuirs 寄存器。
+考虑到在某些负载环境下，接收方进程可能在不同核上迁移，需要对用户态的控制状态进行保存与恢复，主要对 \Rutvec 、\Ruscratch、\Ruepc 三个寄存器进行保存。此外还需要在陷入时将接收方状态的 Active 位置 0 确保当这个核运行其他进程时不会被中断。接收方被唤醒并准备在某个核上运行前，除了对上述三个寄存器进行恢复外，还需要设置 \Rsuirs 寄存器。
 
 \subsection{进程管理}
 
-在 arch/riscv/kernel/uintr.c 中添加用户态中断相关代码，主要涉及以下内容：
+Linux 中线程也被称为轻量级进程（LWP, Light-weight process）\cite{linuxbook}，如无特殊说明，描述中默认使用进程指代进程或线程。用户进程通过系统调用注册成为发送方或接收方（可以同时是发送方和接收方），内核需要在进程控制块中维护发送方和接收方的状态。
+
+接收方状态包括如下内容：
 
 \begin{itemize}
-    \item 控制结构定义和初始化：在进程控制块中维护发送方和接收方的状态
-    \item 进程资源分配和回收：文件描述符，进程控制块内的状态，发送方状态表等
-    \item 系统调用实现：在系统调用向量表中注册系统调用号，并通过 SYSCALL\_DEFINEx 宏声明并实现系统调用函数
+    \item \texttt{\textbf{uirs\_index}} 对应 UINTC 的接收方状态表中的下标；
+    \item \texttt{\textbf{uvec\_mask}} 发送方中断向量位图，记录已分配的向量。
 \end{itemize}
+
+发送方状态包括如下内容：
+
+\begin{itemize}
+    \item \texttt{\textbf{uist\_ctx}} 发送方状态表状态，指向内存中的发送方状态表，此外还包括锁和引用计数等变量；
+    \item \texttt{\textbf{uist\_mask}} 发送方状态表位图，记录已分配的发送方状态表项。
+\end{itemize}
+
+在第二章第五节介绍的软件接口中，发送方和接收方通过文件描述符共享某些状态，包括如下内容：
+
+\begin{itemize}
+    \item \texttt{\textbf{recv}} 指向创建该文件描述符的接收方状态；
+    \item \texttt{\textbf{uvec}} 该文件描述符对应的中断向量。
+\end{itemize}
+
+Linux 在系统调用表中注册系统调用号和处理函数，并通过宏定义系统调用处理函数。
+
+系统调用 \mintinline[breaklines]{c}{void uintr_register_handler(void *handler)} 由接收方发起，用于注册接收方中断处理函数。内核查询 UINTC 并分配空闲项，并在接收方状态中保存相关信息，若当前无空闲项，则返回错误码。此外，内核还需要将 UINTC 中的接收方状态表项清空，以免出现未知的错误。如前面小节所述， \Rsuirs 等寄存器的初始化均放在系统调用处理完毕和返回用户态前之间进行。
+
+系统调用 \mintinline[breaklines]{c}{int uintr_create_fd(int vector)} 由接收方发起，用于注册某一中断向量对应的文件描述符。内核首先分配一个文件描述符，然后根据接收方状态中的 \texttt{uvec\_mask} 分配传入的中断向量，若该向量已被分配，则返回错误码。执行成功后，系统调用返回新创建的文件描述符。
+
+系统调用 \mintinline[breaklines]{c}{int uintr_register_sender(int uintr_fd)} 由发送方发起，用于发送方根据文件描述符注册状态表项。内核首先判断该发送方是否注册过状态表，如果尚未注册，则在内存中分配一定数量的页作为发送方状态表，通过 \texttt{uist\_mask} 分配状态表中的一项，若当前无空闲项，则返回错误码。如表 \ref{tab:uiss} 所示，内核将文件描述符中包含的信息写入到状态表中。
+
+为了防止内存泄漏，需要在进程退出时释放资源。Linux 提供了 \texttt{exit\_thread} 接口，需要添加配置选项来定义这个函数（否则默认为空）。在这个函数中，需要判断当前进程是否为发送方或接收方，发送方需要释放状态表，接收方需要释放占用的 UINTC 表项。此外，文件描述符信息中包含了指针指向发送方状态，为了防止出现野指针，需要在 \texttt{file\_operations} 中注册 \texttt{release} 函数清空指针。
 
 \section{库函数实现}
 
 为方便用户态程序使用系统调用接口，以库函数的形式对系统调用进一步封装，默认支持包括设置 U 态 CSR 、上下文保存与恢复以及读取并更新 UINTC 中的 Pending Requests 等功能：
 
 \begin{lstlisting}[style=CStyle]
-    #include "uintr.h"
-
     extern void __handler_entry(struct __uintr_frame* frame, void* handler) {
         uint64_t irqs = uipi_read();
         csr_clear(CSR_UIP, MIE_USIE);
