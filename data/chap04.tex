@@ -1,124 +1,84 @@
 % !TeX root = ../thesis.tex
 
-\chapter{功能级硬件仿真模拟}
+\chapter{软件实现}
 
-QEMU \cite{qemu} 为操作系统和用户态程序提供虚拟的执行环境，通过动态的二进制转换，模拟 CPU 的行为，同时支持多种外设的仿真，在系统开发中扮演着重要角色。
-QEMU 支持模拟 RISC-V 运行环境，通过对 QEMU 的修改和测试，我们可以不断完善设计方案。对 QEMU 的修改主要分为四个方面：
+\section{Linux 实现}
+
+Linux \cite{linux} 是世界上最著名的开源操作系统。Linux 是标准的宏内核，可以在其上运行多种应用。目前 Linux 已经支持在 RISC-V 硬件平台上运行，也能在 QEMU 模拟的 RISC-V 硬件环境上运行。为了支持用户态中断并对其性能进行更深入的分析，我们对 Linux 6.0 版本进行了修改。针对 Linux 的修改主要分为三个部分：
 
 \begin{itemize}
-    \item 指令翻译：引入对 \Iuipi 指令的译码和执行；
-    \item CPU 状态：维护 CSR 寄存器等 CPU 状态；
-    \item 内存读写：\Iuipi 指令需要直接访问物理内存和 UINTC 外设，调用 \mintinline[breaklines]{C}{void cpu_physical_memory_rw(hwaddr addr, void *buf, hwaddr len, bool is_write)} 函数完成对物理地址的读写；
-    \item 核间中断：实现 UINTC 并向各个核发送中断。
+    \item 添加 UINTC 驱动并让 Linux 识别 UINTC 的设备树信息
+    \item 接收方陷入内核前的状态的保存与恢复
+    \item 注册并实现系统调用
 \end{itemize}
 
-\section{指令翻译}
+\subsection{UINTC 驱动支持}
 
-QEMU 翻译一条指令的过程为：从客户机指令（Guest Instructions）到中间码（TCG，Tiny Code Generator），最后再到宿主机指令（Host Instructions）。
-QEMU 的翻译机制类似于 CPU 流水线中的译码阶段，需要定义模式串来帮助 QEMU 在执行到某一指令时调用对应的辅助函数。模式串的定义位于 target/riscv/insn32.decode ：
-
-\begin{lstlisting}
-uipi_send       0000000  00000 ..... 010 ..... 1111011 @r2
-uipi_read       0000001  00000 ..... 010 ..... 1111011 @r2
-uipi_write      0000010  00000 ..... 010 ..... 1111011 @r2
-uipi_activate   0000011  00000 ..... 010 ..... 1111011 @r2
-uipi_deactivate 0000100  00000 ..... 010 ..... 1111011 @r2
+\label{code:uintcpriv}
+\begin{lstlisting}[style=CStyle]
+    struct uintc_priv {
+        struct cpumask lmask; // 位图记录已连接的 CPU
+        void __iomem *regs;   // UINTC 在内核地址空间映射的起始地址
+        resource_size_t size; // UINTC 地址范围大小
+        u32 nr;               // UINTC 槽位数量
+        void *mask;           // 位图记录已分配的槽位
+        spinlock_t lock;      // 互斥锁
+    };
 \end{lstlisting}
 
-以 \Iuret 这条指令为例，在 target/riscv/insn\_trans 目录下,有各种指令的翻译过程，主要用来将指令解析的结果（寄存器，立即数等）传递给辅助函数，将客户机指令拆解为宿主机指令来模拟目标指令的功能。
-对于 \Iuret 指令的执行涉及到较多 CPU 状态的变化，会对 pc ，CSR 等产生影响， 辅助函数的定义位于 target/riscv/helper\.h，通过宏定义 DEF\_HELPER\_x 来声明辅助函数，例如：
+驱动代码位于 drivers/irqchip/irq-riscv-uintc.c ，Linux 对 UINTC 进行的初始化过程如下：
+
+\begin{itemize}
+    \item 解析设备树获取外设对应的物理地址范围
+    \item 初始化全局控制结构 \ref{code:uintcpriv} 并保存外设信息
+    \item 调用 \mintinline[breaklines]{c}{void __iomem *ioremap(phys_addr_t addr, size_t size)} 完成内核物理地址到虚拟地址的映射，内核可以通过虚拟地址直接访问 UINTC 读写端口
+    \item 初始化全局位图管理 UINTC 中已分配的槽位
+\end{itemize}
+
+\subsection{状态保存与恢复}
+
+arch/riscv/kernel/entry.S 是 Linux 在 RISC-V 硬件平台上运行时的陷入入口，涉及上下文的保存与恢复、针对不同陷入原因跳转到对应的处理函数入口、针对不同系统调用号跳转到系统调用向量表对应的入口等。
+
+Linux 中线程也被称为轻量级进程（LWP, Light-weight process）\cite{linuxbook}，如无特殊说明，描述中默认使用进程指代进程或线程。考虑到在某些负载环境下，接收方进程可能在不同核上迁移，需要对用户态的控制状态进行保存与恢复，主要对 \Rutvec 、\Ruscratch、\Ruepc 三个寄存器进行保存。此外还需要在陷入时将接收方状态的 Active 位置 0 确保当这个核运行其他进程时不会被中断。接收方被唤醒并准备在某个核上运行前，除了对上述三个寄存器进行恢复外，还需要设置 \Rsuirs 寄存器。
+
+\subsection{进程管理}
+
+在 arch/riscv/kernel/uintr.c 中添加用户态中断相关代码，主要涉及以下内容：
+
+\begin{itemize}
+    \item 控制结构定义和初始化：在进程控制块中维护发送方和接收方的状态
+    \item 进程资源分配和回收：文件描述符，进程控制块内的状态，发送方状态表等
+    \item 系统调用实现：在系统调用向量表中注册系统调用号，并通过 SYSCALL\_DEFINEx 宏声明并实现系统调用函数
+\end{itemize}
+
+\section{库函数实现}
+
+为方便用户态程序使用系统调用接口，以库函数的形式对系统调用进一步封装，默认支持包括设置 U 态 CSR 、上下文保存与恢复以及读取并更新 UINTC 中的 Pending Requests 等功能：
 
 \begin{lstlisting}[style=CStyle]
-DEF_HELPER_1(uret, tl, env)
-DEF_HELPER_4(csrrw, tl, env, int, tl, tl)
-\end{lstlisting}
+    #include "uintr.h"
 
-其中第一个参数对应辅助函数的名称 ，第二个参数代表函数的返回值类型（tl 表示 target\_ulong），后面的参数都是辅助函数传入的参数类型。有了以上的参考，我们可以定义其他辅助函数：
-
-\begin{lstlisting}[style=CStyle]
-DEF_HELPER_2(uipi_write, void, env, tl)
-void helper_uipi_write(CPURISCVState *env, target_ulong src) {
-    if (uipi_enabled(env, env->suirs)) {
-        uint64_t addr = UINTC_REG_HIGH(env->suicfg, SUIRS_INDEX(env->suirs));
-        cpu_physical_memory_write(addr, &src, 8);
+    extern void __handler_entry(struct __uintr_frame* frame, void* handler) {
+        uint64_t irqs = uipi_read();
+        csr_clear(CSR_UIP, MIE_USIE);
+        uint64_t (*__handler)(struct __uintr_frame * frame, uint64_t) = handler;
+        irqs = __handler(frame, irqs);
+        uipi_write(irqs);
     }
-}
-\end{lstlisting}
-
-\section{CPU 状态}
-
-CPU 状态的维护位于 target/riscv/cpu.h。这个结构同时考虑了 RV32、RV64、RV128 的情况，这些寄存器都是 CPU 运行时必要的状态。包括但不限于：
-
-\begin{itemize}
-    \item pc
-    \item 整数、浮点寄存器堆
-    \item CSR，有些寄存器是 M 态和 S 态复用的，例如 \Rmstatus、 \Rmip 等
-    \item PMP 寄存器堆
-    \item 通过 kernel\_addr、fdt\_addr 等从指定位置加载镜像
-\end{itemize}
-
-在target/riscv/cpu.h 文件末尾的表中注册 CSR 的操作函数。
-
-中断异常、CSR 等宏定义位于 target/riscv/cpu\_bits.h ，我们需要在其中添加和 U 态有关的中断控制位。
-CPU 中断异常处理函数位于 target/riscv/cpu\_helper.c 的最后，
-这个函数对中断异常原因进行判断，并根据 CPU 当前的特权级做不同的处理。
-这个函数只给出了 M 态和 S 态的中断异常处理，我们需要额外在此处加入委托给 U 态的中断异常处理，也就是读写 \Rustatus，\Rucause，\Ruepc 等寄存器。
-
-\section{核间中断}
-
-QEMU 支持对不同硬件环境的模拟，需要在 virt 硬件环境中添加 UINTC 外设的配置并生成设备树信息。
-
-UINTC 代码实现位于 hw/intc/riscv\_uintc.c ，调用 riscv\_uintc\_realize 对 UINTC 进行初始化，将 UINTC 外设连接到总线上，并初始化总线地址空间。对外设中的状态寄存器（接收方状态寄存器，中断信号寄存器等）进行内存分配和初始化。
-通过调用 qdev\_connect\_gpio\_out 默认将 UINTC 的中断信号绑定至每个核的 \Ruip 寄存器中的 \FcsrUipUsip 位。
-
-\begin{lstlisting}[style=CStyle]
-for (i = 0; i < num_harts; i++) {
-    CPUState *cpu = qemu_get_cpu(hartid_base + i);
-    RISCVCPU *rvcpu = RISCV_CPU(cpu);
-    qdev_connect_gpio_out(dev, i, qdev_get_gpio_in(DEVICE(rvcpu), IRQ_U_SOFT));
-}
-\end{lstlisting}
-
-最后完成对 UINTC 读写函数的注册，这样就可以直接通过物理地址访问 UINTC 外设的读写端口了：
-
-\begin{lstlisting}[style=CStyle]
-static const MemoryRegionOps riscv_uintc_ops = {
-    .read = riscv_uintc_read,
-    .write = riscv_uintc_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = {
-        .min_access_size = 8,
-        .max_access_size = 8
+    static uint64_t __register_receiver(void* handler) {
+        // 设置中断处理函数入口
+        csr_write(CSR_UTVEC, uintrvec);
+        csr_write(CSR_USCRATCH, handler);
+        // 使能 U 态中断处理
+        csr_set(CSR_USTATUS, USTATUS_UIE);
+        csr_set(CSR_UIE, MIE_USIE);
+        int ret = __syscall0(__NR_uintr_register_receiver);
+        // 使能 UINTC 
+        uipi_activate();
+        return ret;
     }
-};
+    // 用户调用接口
+    #define uintr_register_receiver(handler) __register_receiver(handler)
 \end{lstlisting}
 
-在 UINTC 的实现中，中断是通过每次写入 UINTC 的端口来触发的，这和真实的硬件实现其实存在差异。
-例如在 U 态，从目前的设计方案来看，需要同时满足以下几个条件才可以触发中断：
-
-\begin{itemize}
-    \item 当前特权级为 S 态
-    \item \Rustatus 中 \FcsrUstatusUie 位是 1
-    \item \Ruie 中 \FcsrUieUsie 位是 1
-    \item \Ruip 中 \FcsrUipUsip 位是 1
-\end{itemize}
-
-在硬件实现中，可以看成是几个信号的与操作，当其他所有信号都拉高时，任何一个信号从低电平拉高都会触发中断，根据 RISC-V 的特权态规范\cite{rvpriv110}，
-\Isret 会将特权态从 S 态切换回 U 态，\Iuret 会将 \Rustatus 中的 \FcsrUstatusUie 位设置为 \FcsrUstatusUpie 位，在这两条指令后执行的第一条指令都有可能被中断打断并立刻进入中断处理的流程，
-因此我们需要在 QEMU 中模拟这个过程，在 \Isret 和 \Iuret 指令中直接对上述条件进行判断和处理，例如在 \Isret 的辅助函数中：
-
-\lstset{language=C}
-\begin{lstlisting}[style=CStyle]
-if (riscv_has_ext(env, RVN)
-    && prev_priv == PRV_U
-    && get_field(env->mip, MIP_USIP)
-    && get_field(env->mstatus, MSTATUS_UIE)
-    && get_field(env->sideleg, MIP_USIP)) {
-    retpc = env->utvec;     // 直接跳转到U态中断处理入口
-    env->uepc = env->sepc;  // 指定 \Iuret 到同一条指令
-    mstatus = env->mstatus;
-    mstatus = set_field(mstatus, MSTATUS_UPIE, 1);
-    mstatus = set_field(mstatus, MSTATUS_UIE, 0);
-    env->mstatus = mstatus;
-}
-\end{lstlisting}
+注意到上述代码并没将用户注册的函数直接赋值给 \Rutvec 寄存器，而是赋值给了 \Ruscratch ，这是因为在汇编代码中需要先将通用寄存器保存在栈上，然后才能开始执行用户注册的函数。

@@ -2,6 +2,8 @@
 
 \chapter{引言}
 
+\section{研究背景}
+
 传统的 IPC （Inter-Process Communication，进程间通信）机制包括信号、管道、命名管道 、消息队列和共享内存等\cite{modernos}，其性能问题主要体现在以下几个方面：
 
 \begin{itemize}
@@ -11,7 +13,7 @@
     \item[4.] 安全性问题：进程和进程之间、内核和进程之间资源的共享都有可能产生数据窃取和损坏等问题。
 \end{itemize}
 
-在微内核架构中，内核值提供最基本的服务，例如虚拟存储、IPC 等，大部分的系统服务如网络协议栈、文件系统、设备驱动等都以进程的形式运行在用户空间\cite{microkernel}，IPC 因此成为了微内核中最重要的部分之一，同时也是性能瓶颈之一。
+在微内核架构中，内核只提供最基本的服务，例如虚拟存储、IPC 等，大部分的系统服务如网络协议栈、文件系统、设备驱动等都以进程的形式运行在用户空间\cite{microkernel}，IPC 因此成为了微内核中最重要的部分之一，同时也是性能瓶颈之一。
 
 用户态中断（User-Interrupt）是由用户接收和响应的中断，相比于传统的 IPC 机制，用户态直接对中断进行处理可以减少陷入内核带来的开销。无论是在宏内核还是微内核中都具有良好的应用场景。用户态中断的发送方可以是下列中的任何一种：
 
@@ -21,15 +23,82 @@
     \item 进程：seL4 的 Notification \cite{sel4}是一种轻量级的 IPC 机制，基于事件队列和快速路径，进程之间可以实现高效的异步通信，但目标进程需要通过轮询或等待的方式来处理信息。引入用户态中断后，目标进程可以在执行其他任务的同时立即接收并处理信息。
 \end{itemize}
 
-在前人工作的基础上，笔者设计并验证了 RISC-V 用户态中断扩展，通过 QEMU 模拟器对设计方案进行完善，并在 Linux 中加入了对 RISC-V 用户态中断扩展的支持；此外，笔者还在 Rocket Chip 中加入了对用户态扩展的支持，通过软件仿真验证实现，并在 zcu102 开发板上进行性能测试，证明了用户态中断无论是在模拟环境下还是在真实的硬件环境下，相比于传统的 IPC 机制可以取得明显的性能提升。
+\section{相关工作}
+
+\subsection{RISC-V N 扩展}
+
+RISC-V 是一种基于 RISC 原则的指令集架构，由加州大学伯克利分校开发，具有模块化、可扩展等特点。RISC-V N 扩展是在 RISC-V 特权级指令规范 v1.12 的草案中提出的，该扩展的设计思路是为 U 态提供一套和 M 态和 S 态类似的中断异常处理机制。截至目前，该扩展已被废除，因为 N 扩展的应用扩展尚不明朗且没有足够的工作去推动其完善和实现。为了引入用户态中断扩展，我们需要复现 RISC-V N 扩展的设计来支持基本的用户态中断处理流程。
+
+\begin{table}
+    \label{tab:rvn}
+    \centering
+    \begin{threeparttable}[c]
+        \begin{tabular}{|l|l|}
+            \hline
+            名称 & 描述 \\
+            \hline
+            \Rustatus & U 态全局中断使能 \\
+            \hline
+            \Rutvec & U 态陷入向量模式与基址\\
+            \hline
+            \Ruip & U 态待处理中断（时钟中断、软件中断、外部中断） \\
+            \hline
+            \Ruie & U 态使能中断 （时钟中断、软件中断、外部中断）\\
+            \hline
+            \Ruscratch & U 态暂存寄存器 \\
+            \hline
+            \Ruepc & U 态中断或异常指令 pc \\
+            \hline
+            \Rucause & U 态陷入原因 \\
+            \hline
+            \Rsideleg & S 态中断委托 \\
+            \hline
+            \Rsedeleg & S 态异常委托 \\
+            \hline
+        \end{tabular}
+        \caption{RISC-V N CSRs}
+    \end{threeparttable}
+\end{table}
+
+RISC-V N 扩展中的 \Iuret 指令与 \Imret 和 \Isret 类似，将 \Rustatus 寄存器的 \FcsrUstatusUpie 赋值给 \FcsrUstatusUie ，然后跳转至 \Ruepc。
+
+尤予阳等人对 RISC-V N 扩展进行了进一步完善，在 PLIC 中为 U 态额外分配一套上下文，并将 PLIC 中断信号与 CPU 的 \FcsrUipUsip 寄存器连接。他们的工作主要分为两个方面，软件方面对 QEMU 进行修改来验证设计方案，基于 rCore 操作系统应用设计方案；硬件方面对 Rocket Chip 进行修改，并在 FPGA 上进行性能评估。通过将用户态中断应用在用户态串口驱动中，证明其在吞吐率和延时方面的性能表现优于内核态驱动。
+
+\subsection{x86 用户态中断}
+
+2021 年 5 月发布的 Intel 指令集架构扩展 \cite{inteluintr} 中加入了基于 x86 指令集架构的用户态中断扩展。x86 的设计主要有以下几个特点：
+
+\begin{itemize}
+    \item[1.] 发送方和接收方状态在内存中进行维护；
+    \item[2.] {\tt SENDUIPI} 指令需要经过两次读内存和一次写内存操作；
+    \item[3.] 用户态中断有一套独立的控制流程，需要通过 MSR 辅助完成。
+\end{itemize}
+
+intel 在 Linux 中加入了对 x86 用户态中断扩展的支持，并通过测试表明基于用户态中断的 IPC 机制相比于信号、eventfd 和管道等机制有明显的性能提升\cite{x86uintr}。
+
+项晨东等人在 QEMU 加入了对 x86 用户态中断扩展的支持，成功运行了上述 Linux 分支并复现了性能测试结果。
+
+\subsection{Chisel 硬件描述语言}
+
+Chisel \cite{chisel} 是基于 Scala 编程语言的高级硬件描述语言，设计者可以使用 Chisel 编写复杂的、可参数化数字电路生成器，并生成可综合的 Verilog 硬件描述语言。Chisel 既支持高度的抽象化表示，可以使用库函数和 Scala 提供的闭包函数等，同时又保留了对电路细粒度的控制。
+
+Rocket Chip 是基于 Chisel 语言的 SoC 生成器，由加州伯克利分校的计算机科学和人工智能实验室开发。Rocket Chip 最大的特点是高度可配置化，支持生成处理器、内存控制器、外设等其他 SoC 组件。Rocket 处理器基于 RISC-V 指令集架构开发，并支持多种指令集扩展，例如基础的整数指令集、乘除扩展、浮点扩展等。
+
+RoCC (Rocket Custom Coprocessor) \cite{rocc} 是 Rocket Chip 的扩展内容，允许用户添加自定义的协处理器到 Rocket 处理器中来实现加速或其他特殊功能。RoCC 协处理器通过预定义的接口与 Rocket 处理器进行通信。RoCC 接口定义了一组标准的指令和协议，用于在 Rocket 处理器和 RoCC 协处理器之间传递数据和控制信息，它允许 RoCC 协处理器通过 Rocket 处理器的缓存系统访问内存和外设。
+
+
+\section{本文工作}
+
+本文的主要工作是设计并验证了 RISC-V 用户态中断扩展。具体地，本文通过软硬件结合的方法，自底向上对 RISC-V 用户态中断进行实现和性能评估，并在指令级别验证了用户态中断相对于传统的跨核通信机制的性能优势。
 
 本文主要分为以下几个部分：
 
-\begin{itemize}
-    \item \textbf{背景介绍}：简要介绍 RISC-V N 扩展和 x86 用户态中断指令规范；
-    \item \textbf{硬件设计方案}： RISC-V 用户态中断扩展硬件设计方案；
-    \item \textbf{功能级硬件仿真模拟}:介绍在 QEMU 上关于 RISC-V 用户态中断扩展的实现细节；
-    \item \textbf{硬件实现}：介绍在 Rocket Chip 上关于 RISC-V 用户态中断扩展的实现细节；
-    \item \textbf{软件实现}：介绍在 Linux 和用户库上关于 RISC-V 用户态中断扩展的实现细节；
-    \item \textbf{系统评估}：分别对软件实现和硬件实现进行性能测试和分析。
-\end{itemize}
+第 2 章介绍 RISC-V 用户态中断扩展的硬件设计方案，包括设计目标、CPU 状态维护、用户态中断控制器、UIPI 指令以及软件接口和工作流程。
+
+第 3 章详细描述了硬件的架构和实现细节，主要包括两个层面：（1）在 QEMU 中加入对 RISC-V 用户态中断的支持，实现功能级的硬件模拟仿真；（2）在 Rocket Chip 中加入对 RISC-V 用户态中断的支持，实现电路级的硬件模拟仿真。
+
+第 4 章详细描述了软件的适配和实现细节，主要包括两个层面：（1）在 Linux 6.0 中加入对硬件实现的适配和系统调用接口；（2）添加库函数对系统调用进行封装，为用户态程序提供接口。
+
+第 5 章介绍了在 FPGA 开发板上搭建 SoC 和实验环境进行功能和性能测试，并对性能测试的结果进行详细分析。
+
+第 6 章对本文工作进行总结，并介绍未来可能的研究方向。

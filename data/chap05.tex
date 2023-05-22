@@ -1,167 +1,102 @@
 % !TeX root = ../thesis.tex
 
-\chapter{硬件实现}
+\chapter{系统评估}
 
-\section{Chisel}
+本章重点介绍在 FPGA 上对系统的构建和评估，实验的目标主要分为以下几个方面：
 
-Chisel \cite{chisel} 是基于 Scala 编程语言的高级硬件描述语言，设计者可以使用 Chisel 编写复杂的、可参数化数字电路生成器，并生成课综合的 Verilog 。Chisel 支持高度的抽象化表示，可以使用库函数和 Scala 提供的闭包函数等，同时保留了对电路细粒度的控制。
+\begin{itemize}
+    \item 验证硬件实现的正确性；
+    \item 验证软件实现的正确性；
+    \item 验证软硬件协同设计的用户态中断的性能优势；
+    \item 分析测试结果与硬件行为间的联系。
+\end{itemize}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=0.5\linewidth]{figures/chisel-tool-flow.png}
-    \caption{Chisel 工作流程\cite{chiselbook}}
-    \label{fig:chisel}
-\end{figure}
-
-\subsection{Rocket Chip}
-
-Rocket Chip 是基于 Chisel 语言的 SoC 生成器，由加州伯克利分校的计算机科学和人工智能实验室开发。Rocket Chip 最大的特点是高度可配置化，支持生成处理器、内存控制器、外设等其他 SoC 组件。Rocket 处理器基于 RISC-V 指令集架构开发，并支持多种指令集扩展，例如基础的整数指令集、乘除扩展、浮点扩展等。
+\section{实验环境}
 
 \begin{figure}
     \centering
-    \includegraphics[width=0.8\linewidth]{figures/rocketchip.png}
-    \caption{Rocket 处理器数据通路}
-    \label{fig:rocketchip}
+    \includegraphics[width=0.8\linewidth]{figures/soc.png}
+    \caption{SoC 整体架构}
+    \label{fig:soc}
 \end{figure}
 
-\subsection{RoCC}
+本文实验主要在 Zynq UltraScale+ MPSoC ZCU102 开发板上开展。ZCU102 分为两个部分，分别为处理器子系统（PS） 和 可编程逻辑（PL） 。PS 提供一款四核 ARM® Cortex®-A53、双核 Cortex-R5F 实时处理器，可以直接对开发板上的资源进行控制；PL 端可以通过 DDR4 组件访问内存资源。
 
-RoCC (Rocket Custom Coprocessor) \cite{rocc} 是 Rocket Chip 的扩展内容，允许用户添加自定义的协处理器到 Rocket 处理器中来实现加速或其他特殊功能。
+首先，应用 Xilinx 提供的 petalinux SDK 构建在 PS 上运行的 Linux 系统，并挂载 SD 卡作为系统的存储外设。如图 \ref{fig:soc} 所示，引入 AXI GPIO IP 核并在 PS 的设备树给出相关信息，GPIO 的出端口连接到 Rocket Chip 内部，可以在 PS 上操作 /sys/class/gpio/* 来写入这个端口对 Rocket Chip 进行复位。
 
-RoCC 协处理器通过预定义的接口与 Rocket 处理器进行通信。RoCC 接口定义了一组标准的指令和协议，用于在 Rocket 处理器和 RoCC 协处理器之间传递数据和控制信息，它允许 RoCC 协处理器通过 Rocket 处理器的缓存系统访问内存和外设。
+利用 Rocket Chip 支持的自定义端口和自定义配置参数构建顶层模块。自定义配置包括加入第三章最后一节介绍的 UIPI 协处理器，设置 BootROM 的地址和加载内容。Rocket Chip 顶层模块需要对外暴露两个 AXI master 接口，MEM 端口访问位于 PS 端的 DDR 控制器，MMIO 端口访问 PL 上引入的 Uart16550 IP 核。关于两个端口的地址映射，需要将 Rocket Chip 配置的映射和 Block Design 构建时指定的地址映射相对应。
 
-\section{RISC-V N 扩展}
+进一步地，定义系统的顶层模块对 Rocket Chip 顶层模块和 Block Design 模块进一步封装，该模块会对 AXI 接口的位宽进行处理，此外，由于 Rocket Chip 默认看到的内存起始地址为 0x80000000 ，而 Block Deisgn 中 DDR 控制器访问端口的地址映射起始地址为 0 ，需要在模块中对地址高位进行截断。
 
-参考设计方案，在 rocket/CSR.scala 中添加读写 CSR 的逻辑，需要注意 \Ruip 等多个特权级共用的寄存器需要设置对应特权级的屏蔽位。
-
-参考 M 态中断和异常委托的逻辑，添加 S 态委托到 U 态的逻辑，此外需要在 S 态将已委托给 U 态的中断屏蔽。
-
-在 rocket/IDecode.scala 中添加 \Iuret 的指令解码并将指令解码注册到 decode\_table 中。\Iuret 的功能逻辑比较简单，只需要设置 \Rustatus 中的使能位并重新设置 pc 即可。
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    // 读取 uip 寄存器
-    val read_uip = read_mip & read_sideleg
-    // 委托给 U 态的中断
-    val delegateU = Bool(usingUser) && reg_mstatus.prv === PRV.U && delegate && read_sideleg(cause_lsbs) && cause(xLen - 1)
-    // U 态的中断
-    val u_interrupts = Mux(nmie && reg_mstatus.prv === PRV.U && reg_mstatus.uie, pending_interrupts & read_sideleg, UInt(0))
-    // uret 的逻辑
-    when (Bool(usingUser) && !io.rw.addr(9) && !io.rw.addr(8)) {
-      reg_mstatus.uie := reg_mstatus.upie
-      reg_mstatus.upie := true
-      ret_prv := PRV.U
-      io.evec := readEPC(reg_uepc)
-    }
-\end{lstlisting}
-
-\section{UINTC 用户态中断控制器}
-
-参考 CLINT 和 PLIC 实现 UINTC 外设，首先定义 device 并指定名称和 compatible ，和 QEMU 中生成设备树的逻辑类似，在这里需要指定 UINTC 连接到 intc ，且需要指定为 interrupt-controller 让 linux 完成初始化。
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    val device = new SimpleDevice("uintc", Seq("riscv,uintc0")) {
-        override val alwaysExtended: Boolean = true
-        override def describe(resources: ResourceBindings): Description = {
-            val Description(name, mapping) = super.describe(resources)
-            val extra = Map("interrupt-controller" -> Nil,
-                "#interrupt-cells" -> Seq(ResourceInt(1)))
-            Description(name, mapping ++ extra)
-        }
-    }
-\end{lstlisting}
-
-定义 node 并配置 UINTC 寄存器的读写端口，定义一系列的 RegField 实现读写操作，调用 \mintinline{scala}{node.regmap(opRegFields)} 进行注册：
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    val node: TLRegisterNode = TLRegisterNode(
-        address = Seq(params.address),
-        device = device,
-        beatBytes = beatBytes,
-        concurrency = 1)
-
-    // 注册 SEND 操作的写端口
-    val opRegFields = uirs.zipWithIndex.flatMap { case (x, i) =>
-      Seq(sendOffset(i) -> Seq(RegField(64, (),
-        RegWriteFn { (valid, data) =>
-            x.pending := x.pending | (valid << data(5, 0)).asUInt
-            Bool(true)
-        })))}
-\end{lstlisting}
-
-定义 intnode 连接到 CPU ，在上述 SEND 操作里将 ipi 寄存器对应位置位：
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    val intnode: IntNexusNode = IntNexusNode(
-        sourceFn = { _ => IntSourcePortParameters(Seq(IntSourceParameters(1,
-            Seq(Resource(device, "int"))))) },
-        sinkFn = { _ => IntSinkPortParameters(Seq(IntSinkParameters())) },
-        outputRequiresInput = false)
-    // 拉高 ipi 寄存器
-    val ipi = Seq.fill(nHarts) { RegInit(0.U) }
-    ipi.zipWithIndex.foreach { case (hart, i) =>
-        hart := uirs.map(x => x.pending =/= 0.U && x.active && hartId(x.hartid) === i.asUInt).reduce(_ || _)
-    }
-    val (intnode_out, _) = intnode.out.unzip
-    intnode_out.zipWithIndex.foreach { case (int, i) =>
-        int(0) := ShiftRegister(ipi(i)(0), params.intStages) // usip
-    }
-\end{lstlisting}
-
-关键的是将中断信号连接到对应核的 \FcsrUipUsip ，参考其他信号的处理方法，连接 core.interrupts 和 intSinkNode：
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    // freechips.rocketchip.tile.SinksExternalInterrupts
-    def csrIntMap: List[Int] = {
-        // ...
-        val usip = if (usingUser) Seq(0) else Nil
-        List(65535, 3, 7, 11) ++ seip ++ usip ++ List.tabulate(nlips)(_ + 16)
-    }
-    // freechips.rocketchip.subsystem.CanAttachTile
-    // 将 intSinkNode 的输入连接到 Rocket 处理器
-    def decodeCoreInterrupts(core: TileInterrupts): Unit = {
-        // ...
-        val usip = if (core.usip.isDefined) Seq(core.usip.get) else Nil
-        // ...
-        val (interrupts, _) = intSinkNode.in(0)
-        (async_ips ++ periph_ips ++ seip ++ usip ++ core_ips).zip(interrupts).foreach { case(c, i) => c := i }
-    }
-\end{lstlisting}
-
-\section{UIPI 协处理器}
-
-根据 Rocket 处理器的数据通路 \ref{fig:rocketchip} ，RoCC 位于流水线的写回阶段，读写 CSR 时需要考虑写后读冲突，RoCC 读 \Rsuirs 和 \Rsuist 寄存器时需要增加前传逻辑。
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    // 前传逻辑，以 suirs 寄存器为例
-    when (decoded_addr(CSRs.suirs)) {
-        val new_suirs = new SUIRS().fromBits(wdata)
-        reg_suirs := new_suirs
-        io.uintr.suirs := new_suirs
-    }.otherwise {
-        io.uintr.suirs := reg_suirs
-    }
-\end{lstlisting}
-
-在配置中添加 UIPI 协处理器：
-
-\begin{lstlisting}[style=CStyle,language=scala]
-    class WithUIPI extends Config((_, _, _) => {
-        case BuildRoCC => Seq((p: Parameters) => {
-            val module = LazyModule(new UIPI(OpcodeSet.custom3)(p))
-            module
-        })
-    })
-\end{lstlisting}
-
-UIPI 协处理器接收译码结果并根据操作码来执行不同处理流程：
+为了与 Rocket Chip 上运行的系统软件进行交互，引入 Uart16550 IP 核，虽然 Rocket Chip 能够自动生成与内部配置有关的设备树信息，但缺少 PL 额外引入的设备的设备信息，需要手动加入 Uart16550 的设备树节点。
 
 \begin{figure}
     \centering
-    \includegraphics[width=0.5\linewidth]{figures/uintr3.png}
-    \caption{UIPI 协处理器工作流程}
-    \label{fig:uintr3}
+    \includegraphics[width=0.8\linewidth]{figures/boot.png}
+    \caption{系统软件启动流程}
+    \label{fig:boot}
 \end{figure}
 
-根据设计方案中对 \Iuipi 指令的描述，UIPI 协处理器要发起至多两次访存请求，其中第二次一定为不经过缓存系统的读或写 UINTC 请求，由于缓存系统考虑了访问外设的请求，在实现逻辑中两次请求会依次经 RoCC 的访存端口发出。此外，对于写外设请求，数据缓存不会拉高 resp 信号，需要在 UIPI 中记录 cycle 并根据数据缓存的响应信号判断最近一次写请求是否成功，若失败则重新发送之前的请求。
+系统软件的启动流程如图 \ref{fig:boot} 所示。BootROM 为 Rocket Chip 内置的启动代码，在构建时会提前写入到模块中，跳转地址默认为内存的起始地址。
 
-SimpleHellaCacheIFReplayQueue 是一个缓存队列模块，用于处理来自 Rocket 处理器和 DMA 设备的读写请求，在默认的实现中被用来缓存多个 RoCC 的读写请求，支持失败读写请求的重试。然而对于写外设请求，队列会持续等待 resp 信号并阻塞。因为目前只有一个 UIPI 协处理器，所以在实际的实现中移除了这个队列。
+OpenSBI (RISC-V Open Source Supervisor Binary Interface) 是 RISC-V 架构下的 Bootloader，支持通用 SBI 接口，支持 dynamic、jump、payload 三种启动方式。本文的实验采用 payload 启动方式，OpenSBI 镜像会根据 Linux 镜像和设备树的文件位置一起构建。OpenSBI 会在运行时将 Linux 镜像加载到目标地址，并将设备树放在指定的地址。跳转到 Linux 镜像前，OpenSBI 会将核号、设备树地址等信息传递给 Linux 用于 Linux 进一步的初始化。
+
+Buildroot 是一个构建嵌入式 Linux 系统的框架。本文的实验使用 Buildroot 构建根文件系统，并在 Linux 的编译选项中指定文件系统镜像的位置，让 Linux 镜像与文件系统镜像一起构建，并将该文件系统作为 initramfs 。此外，为了让 Linux 在启动时可以打印日志，需要在设备树中添加启动参数指定 earlycons 。
+
+如前文所述，PS 可以对 Rocket Chip 进行复位，在复位前，需要把构建好的 OpenSBI 镜像拷贝到内存中，这部分内存以 reserved-memory 的形式挂载到 PS 的 /dev/mem 文件上，PS 可以直接对该文件进行 mmap 操作完成镜像的写入。
+
+Linux 启动后，可以在主机上连接开发板的串口并看到输出：
+
+\section{功能测试}
+
+\subsection{Verilator 仿真测试}
+
+\subsection{软件接口测试}
+
+根据图 \ref{fig:uintr2} 中 RISC-V 用户态中断的工作流程，可以实现一个简单的进程间通信应用。
+
+\begin{lstlisting}[style=CStyle]
+    volatile unsigned int uintr_received; // volatile 避免编译优化
+    unsigned int uintr_fd;
+
+    uint64_t uintr_handler(struct __uintr_frame *ui_frame, uint64_t irqs) {
+        uintr_received = 1; // 设置标志位
+        return 0;
+    }
+
+    void *sender_thread(void *arg) {
+        int uipi_index;
+        // 注册发送方状态表项
+        uipi_index = uintr_register_sender(uintr_fd);
+        // 发送用户态中断
+        uipi_send(uipi_index);
+        return NULL;
+    }
+
+    int main() {
+        pthread_t pt;
+        int ret;
+        // 注册接收方中断处理函数
+        if (uintr_register_receiver(uintr_handler))
+            exit(EXIT_FAILURE);
+        // 注册文件描述符
+        ret = uintr_create_fd(1);
+        if (ret < 0) exit(EXIT_FAILURE);
+        uintr_fd = ret;
+        // 创建发送方
+        if (pthread_create(&pt, NULL, &sender_thread, NULL))
+            exit(EXIT_FAILURE);
+        // 忙等待标志位
+        while (!uintr_received);
+        pthread_join(pt, NULL);
+        close(uintr_fd);
+        // 正常退出
+        exit(EXIT_SUCCESS);
+    }
+\end{lstlisting}
+
+接收方注册中断处理函数，注册文件描述符，创建发送方进程，并忙等待标志位；发送方进程注册后发送一个中断便直接退出；接收方收到中断并陷入中断处理函数后设置标志位，回到正常流程发现标志位已被设置，继续执行直到退出。
+
+\section{性能测试}
+
+\section{测试结果分析}
