@@ -1,14 +1,14 @@
 % !TeX root = ../thesis.tex
 
-\chapter{软件实现}
+\chapter{软件适配}
 
-\section{Linux 实现}
+\section{Linux 内核扩展}
 
 Linux \cite{linux} 是世界上最著名的开源操作系统。Linux 是标准的宏内核，可以在其上运行多种应用。目前 Linux 已经支持在 RISC-V 硬件平台上运行，也能在 QEMU 模拟的 RISC-V 硬件环境上运行。为了支持用户态中断并对其性能进行更深入的分析，我们对 Linux 6.0 版本进行了修改。针对 Linux 的修改主要分为三个部分：
 
 \begin{itemize}
     \item 添加 UINTC 驱动并让 Linux 识别 UINTC 的设备树信息；
-    \item 接收方陷入内核前的状态的保存与恢复；
+    \item 接收方陷入内核的状态保存与恢复；
     \item 注册并实现系统调用。
 \end{itemize}
 
@@ -104,4 +104,78 @@ Linux 在系统调用表中注册系统调用号和处理函数，并通过宏�
     #define uintr_register_receiver(handler) __register_receiver(handler)
 \end{lstlisting}
 
-注意到上述代码并没将用户注册的函数直接赋值给 \Rutvec 寄存器，而是赋值给了 \Ruscratch ，这是因为在汇编代码中需要先将通用寄存器保存在栈上，然后才能开始执行用户注册的函数。
+注意到上述代码并没将用户注册的函数直接赋值给 \Rutvec 寄存器，而是赋值给了 \Ruscratch 。参考下面给出的汇编代码，需要先将通用寄存器保存在栈上，然后才能开始执行用户注册的函数。用户态中断处理函数 \texttt{\_\_handler\_entry} 执行完毕后跳转到 \texttt{jal} 的下一条指令也就是 \texttt{uintrret} 的入口，恢复原来执行流的通用寄存器。
+
+\begin{lstlisting}[style=ASMStyle]
+    .section .text
+    .align 4
+    .globl uintrvec
+uintrvec:
+    # 分配栈空间
+    addi sp, sp, -248
+    # 保存通用寄存器
+    sd ra, 0(sp)
+    # ...此处省略...
+    # 跳转至用户态中断处理函数
+    mv a0, sp
+    csrr a1, uscratch
+    jal __handler_entry
+
+    .align 4
+    .globl uintrret
+uintrret:
+    # 从栈上恢复通用寄存器
+    ld ra, 0(sp)
+    # ...此处省略...
+    # 释放栈空间
+    addi sp, sp, 248
+    # 返回原来的执行流中
+    uret
+\end{lstlisting}
+
+\section{用户态程序实现}
+
+根据图 \ref{fig:uintr2} 中 RISC-V 用户态中断的工作流程，可以实现一个简单的进程间通信程序。
+
+\begin{lstlisting}[style=CStyle]
+    volatile unsigned int uintr_received; // volatile 避免编译优化
+    unsigned int uintr_fd;
+
+    uint64_t uintr_handler(struct __uintr_frame *ui_frame, uint64_t irqs) {
+        uintr_received = 1; // 设置标志位
+        return 0;
+    }
+
+    void *sender_thread(void *arg) {
+        int uipi_index;
+        // 注册发送方状态表项
+        uipi_index = uintr_register_sender(uintr_fd);
+        // 发送用户态中断
+        uipi_send(uipi_index);
+        return NULL;
+    }
+
+    int main() {
+        pthread_t pt;
+        int ret;
+        // 注册接收方中断处理函数
+        if (uintr_register_receiver(uintr_handler))
+            exit(EXIT_FAILURE);
+        // 注册文件描述符
+        ret = uintr_create_fd(1);
+        if (ret < 0) exit(EXIT_FAILURE);
+        uintr_fd = ret;
+        // 创建发送方
+        if (pthread_create(&pt, NULL, &sender_thread, NULL))
+            exit(EXIT_FAILURE);
+        // 忙等待标志位
+        while (!uintr_received);
+        pthread_join(pt, NULL);
+        close(uintr_fd);
+        // 正常退出
+        exit(EXIT_SUCCESS);
+    }
+\end{lstlisting}
+
+在 \texttt{main} 函数中，首先由接收方注册中断处理函数，注册文件描述符，创建发送方线程，并忙等待标志位；线程创建默认地址空间共享，因此发送方线程可以根据文件描述符注册，发送一个中断便直接退出；接收方收到中断并陷入中断处理函数后设置标志位，回到正常流程发现标志位已被设置，继续执行直到退出。
+
