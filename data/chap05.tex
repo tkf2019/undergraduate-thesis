@@ -57,6 +57,7 @@ Linux 启动后，可以在主机上连接开发板的串口并看到输出：
 \section{功能测试}
 
 \subsection{Verilator 仿真测试}
+\label{sec:verilator}
 
 Verilator \cite{verilator} 是一款开源的硬件描述语言仿真器，可以生成 C++仿真代码并在主机上模拟硬件电路的行为。相比于传统的基于事件的仿真器，Verilator 可以更快速、准确地模拟大型电路。
 Rocket Chip 集成了 Verilator 仿真器，可以在综合前对 Rocket Chip 进行行为仿真，通过观察 Verilator 生成的波形，可以提早发现并解决硬件逻辑问题，减少硬件调试带来的开销。
@@ -114,6 +115,8 @@ ipc-bench \cite{ipcbench} 是一个用来的测试 Linux 和 OS X 操作系统�
     \end{threeparttable}
     \label{tab:latency}
 \end{table}
+
+相比于 x86 的测试结果 \cite{x86uintr} ，上述实验的结果提升了一个数量级，如前文所述，我们的实验移除了对单次通信时间的统计，因此性能优势更加明显，而 intel 的测试则保留了单次通信时间的统计。
 
 \begin{figure}
     \centering
